@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "智慧树答题助手",
+  "version": "1.0.0",
+  "description": "识别页面题目并给出答案；支持一键回填（绝不提交）",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.zhihuishu.com/*"
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "智慧树答题助手"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.zhihuishu.com/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

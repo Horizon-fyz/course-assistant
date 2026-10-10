@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px; min-height: 200px;
+      font: 14px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: #1e1e2e; color: #cdd6f4;
+      padding: 16px;
+    }
+    h1 { font-size: 16px; margin-bottom: 12px; color: #89b4fa; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+    button {
+      flex: 1; padding: 10px; border: none; border-radius: 6px;
+      font-size: 14px; cursor: pointer; transition: opacity .15s;
+    }
+    button:hover { opacity: .85; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .primary { background: #89b4fa; color: #1e1e2e; font-weight: 600; }
+    .success { background: #a6e3a1; color: #1e1e2e; }
+    .danger  { background: #f38ba8; color: #1e1e2e; }
+    .ghost   { background: #45475a; color: #cdd6f4; }
+    .status  { font-size: 12px; color: #a6adc8; min-height: 20px; }
+    .config  { margin-top: 12px; padding-top: 12px; border-top: 1px solid #45475a; }
+    .config label { display: block; margin-bottom: 6px; font-size: 12px; color: #a6adc8; }
+    .config input {
+      width: 100%; padding: 6px 8px; margin-top: 2px;
+      background: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 4px;
+      font-size: 12px;
+    }
+    .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #a6adc8; }
+    .toggle input { accent-color: #89b4fa; }
+  </style>
+</head>
+<body>
+  <h1>智慧树答题助手</h1>
+
+  <div class="row">
+    <button id="btn-scan" class="primary">扫描题目</button>
+  </div>
+  <div class="row">
+    <button id="btn-answer" class="success" disabled>获取答案</button>
+    <button id="btn-apply" class="danger" disabled>回填（不提交）</button>
+  </div>
+  <div class="row">
+    <button id="btn-float" class="ghost">显示悬浮窗</button>
+  </div>
+
+  <div class="status" id="status">就绪</div>
+
+  <div class="config">
+    <label>AI 接口地址
+      <input id="cfg-baseUrl" placeholder="https://api.deepseek.com/v1" />
+    </label>
+    <label>API Key
+      <input id="cfg-apiKey" type="password" placeholder="sk-..." />
+    </label>
+    <label>模型
+      <input id="cfg-model" placeholder="deepseek-chat" />
+    </label>
+    <div class="toggle">
+      <input type="checkbox" id="cfg-auto" />
+      <label for="cfg-auto">打开页面时自动扫描</label>
+    </div>
+  </div>
+
+  <script src="src/popup.js"></script>
+</body>
+</html>

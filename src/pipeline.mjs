@@ -33,6 +33,9 @@ const log = (m) => {
 const argv = process.argv.slice(2);
 const getArg = (n, d = null) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const prefer = getArg('--browser', 'chromium') === 'firefox' ? 'firefox' : 'chromium';
+const browserExe = getArg('--browser-exe');            // 任意浏览器：直接指定可执行文件
+const firefoxProfile = getArg('--firefox-profile');    // Firefox 指定已有 profile（例如你平时登录的那个）
+const firefoxPort = getArg('--firefox-port') ? Number(getArg('--firefox-port')) : undefined;
 const dryRun = argv.includes('--dry-run');
 const onlyCourse = getArg('--course');
 
@@ -217,9 +220,9 @@ async function grabPaper(page, url, timeout = 25000) {
 
 // ================= 主流程 =================
 log('══════════ 智慧树全流程自动化 ══════════');
-log(`浏览器: ${prefer}   模式: ${dryRun ? '仅发现课程(dry-run)' : '完整抓取'}   ${onlyCourse ? '限定课程: ' + onlyCourse : ''}\n`);
+log(`浏览器: ${browserExe || prefer}   模式: ${dryRun ? '仅发现课程(dry-run)' : '完整抓取'}   ${onlyCourse ? '限定课程: ' + onlyCourse : ''}\n`);
 
-const { ctx, describe, close } = await connect({ prefer });
+const { ctx, describe, close } = await connect({ prefer, exe: browserExe, firefoxProfile, firefoxPort });
 _ctx = ctx;
 log('[1] 浏览器: ' + describe);
 

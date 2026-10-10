@@ -36,10 +36,12 @@ Windows 下也可以直接**双击 `run.cmd`** —— 会做环境自检并显�
 | `run.cmd import` | **导入个人信息**：从任意 JSON 导入，或 `--prompt` 交互录入 |
 | `run.cmd whoami` | 查看当前生效的凭据与来源，并把平台真实姓名写回 |
 | `run.cmd login` | 登录智慧树并把会话票据改写为持久 Cookie（关掉浏览器仍在线） |
-| `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查 |
+| `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查（默认 Edge，可换 Firefox / 任意浏览器） |
 | `run.cmd docs` | 只生成文档：Markdown（打印版 + 纯文本）、Word、PDF、打印预览 HTML、Excel |
+| `run.cmd solve` | 只作答：识别题库 → 调用 AI（OpenAI 兼容）→ 输出答案汇总 + 回填版 |
+| `run.cmd pad` | 对答案悬浮窗：置顶小窗，抓屏识别当前题目并给答案（只读，不代填） |
 | `run.cmd verify` | 校验产物：数据契约 + 文档完整性 + 产物清单 |
-| `run.cmd all` | 上面几步串起来：fetch → docs → verify |
+| `run.cmd all` | 上面几步串起来：fetch → docs → verify → solve（未配 AI 时自动跳过 solve） |
 
 ### 细参
 
@@ -49,9 +51,14 @@ run.cmd import D:\other-system.json      # 导入别人/别的系统导出的凭
 run.cmd login --student-id 00000000000 --password "***"   # 临时指定，不落盘
 run.cmd fetch --course 国家安全教育       # 只抓某一门课
 run.cmd fetch --dry-run                 # 只发现课程，不抓题（确认新课程能否识别）
-run.cmd fetch --browser firefox         # 指定浏览器（默认 Edge）
+run.cmd fetch --browser firefox         # 用 Firefox（走 WebDriver BiDi，默认 Edge/CDP）
+run.cmd fetch --browser-exe "D:\Brave\brave.exe"   # 任意浏览器：直接指定可执行文件
 run.cmd docs  --formats md,pdf          # 只产出指定格式
 run.cmd docs  --out D:\题库             # 产物输出到别的目录
+run.cmd solve --limit 10                # 先拿 10 题试跑作答
+run.cmd solve --mock                    # 离线走通作答流程（不调用 AI、不花钱）
+run.cmd pad                             # 打开「对答案」置顶悬浮窗（Alt+Q 抓屏识别）
+run.cmd pad --test .\shot.png            # 不开窗口，只识别一张图（自检）
 run.cmd login --restart-check           # 登录后顺带验证「重启浏览器仍在线」
 ```
 
@@ -167,7 +174,11 @@ node recon/check-docs.mjs       # 检查文档是否与代码漂移
 zhs.mjs                  ← 统一入口（所有命令都从这里进）
 run.cmd                  ← Windows 启动器（自动定位 node 与浏览器运行时）
 config\account-live.json ← 账号凭据
-src\browser.mjs          ← 浏览器抽象层（Edge CDP / Firefox 持久化 profile）
+src\browser.mjs          ← 浏览器抽象层（Chromium 系走 CDP / Firefox 走 BiDi / 支持 --browser-exe）
+src\bidi.mjs             ← WebDriver BiDi 最小客户端（零依赖，接管系统 Firefox）
+src\browser-firefox.mjs  ← Playwright 兼容适配层（让既有代码在 Firefox 上原样跑）
+md-ai-answer\src\hud.mjs   ← 悬浮窗的「识图 + 作答」核心
+md-ai-answer\pad\pad.ps1   ← 「对答案」置顶悬浮窗（PowerShell + WinForms）
 src\login-flow.mjs       ← 登录公共逻辑（学校下拉框等易错点集中在这里）
 src\pipeline.mjs         ← 抓取主流程
 recon\login-and-persist.mjs  ← 登录 + 会话固化
@@ -184,9 +195,15 @@ recon\                   ← 侦察与诊断脚本（一般不用管）
 
 ## 已知限制
 
-1. **Firefox 自动化路径不通**：Playwright 的 Firefox 走 `-juggler-pipe`（命名管道），在 DSH 作业沙箱里子进程创建被拒（`SpawnTarget 0x80070005`）后浏览器以 `0xC0000005` 退出。对照组：不带 `-juggler-pipe` 的裸启动能稳定运行，说明 Firefox 本身正常，卡的是沙箱 + 命名管道。
-   → 主路径用 **Edge/Chrome**（CDP 接管，`navigator.webdriver=false`，能过易盾验证码）。
-   → 另有 `node src\firefox-session.mjs`：读本机 Firefox 已登录的 Cookie 交给自动化用，不需要启动 Firefox。
+1. **浏览器：抓取层已与浏览器解耦**（这是重点，不再是"只能用 Edge"）
+   - **Chromium 系**（Edge / Chrome / Brave / Vivaldi / Opera / 360 / QQ / Chromium）：自动发现可执行文件 → `--remote-debugging-port` 启动 → Playwright `connectOverCDP` 接管。`navigator.webdriver=false`，能过网易易盾验证码。
+   - **Firefox**：官方构建已移除 CDP（`--remote-debugging-port` 只起 httpd.js，没有 `/json/*` 端点），改走 **WebDriver BiDi**（`src\bidi.mjs` + `src\browser-firefox.mjs`）。
+     - 为什么不用 Playwright 自带 Firefox：它依赖 `-juggler-pipe` 命名管道，在受限沙箱里子进程创建被拒（`SpawnTarget 0x80070005`），浏览器随即以 `0xC0000005` 退出。
+     - BiDi 下 Firefox 的 `navigator.webdriver` 默认是 `true`（WebDriver 协议要求）→ 已用 `script.addPreloadScript` 在页面脚本之前改写成 `false`，否则易盾必拦。
+     - 首次用 Firefox 抓题，要在它打开的窗口里**人工登录一次**（会话落在 `browser-profile-firefox`），之后就不用再登。
+     - 想直接复用它读你平时那个已登录的 Firefox：`--firefox-profile "%APPDATA%\Mozilla\Firefox\Profiles\xxxx.default-release"`，**前提是先完全退出 Firefox**（profile 被占用时无法接管）。
+   - **任意其它浏览器**：`--browser-exe "<可执行文件路径>"`（按文件名自动判断：Firefox 走 BiDi，其余按 Chromium 走 CDP）。
+   - 另有 `node src\firefox-session.mjs`：不启动浏览器，直接读本机 Firefox 已登录的 Cookie 交给自动化用。
 
 2. **`config\account.json` 读不了**：上一轮把它的权限收紧成「仅 Administrator 全控制」，而当前用户是 `USER`（非管理员），读取/删除均被拒。因此改用 `config\account-live.json`。要恢复原文件需管理员执行
    `icacls "K:\网页自动学习\config\account.json" /reset`

@@ -200,24 +200,6 @@ POST https://studyservice-api.zhihuishu.com/gateway/t/v1/learning/queryStuyInfo
 
 ---
 
-## 7. 必须注意的合规红线
-
-课程页面存在明确的反作弊机制，**平台会记录并惩罚异常学习行为**：
-
-- `findCheatListCount` / `findExamCheatListCount` / `findAbnormalCount` —— 异常行为计数
-- `cheat/exceptionActionDetail` —— 返回 `punishType`、`lock`（**锁定**）、`startTime`
-- 页面明文警告：「**前不再允许学习。详细异常行为记录可点击【查看异常记录】进行查看**」
-- 课程页面声明：「本网站所有的课程视频内容、试题及答案等受著作权法保护」
-
-**因此本项目的范围边界**：
-
-- ✅ 只读聚合：课程表、章节进度、成绩、通知/待办导出
-- ✅ 批量下载课程资料（课件的著作权归平台/教师，请自行确认学校授权）
-- ✅ 截止时间监控与提醒
-- ❌ **不做**：刷视频时长、伪造学习进度、自动答题、代考 —— 这既违反学术诚信与平台条款，也会触发账号锁定
-
----
-
 ## 8. 换机后的路径与环境（重要）
 
 本工作区已从旧机器（`D:\网页自动学习`，用户 `Administrator`）迁移到本机，全部脚本已改为**自定位**，

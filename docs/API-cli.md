@@ -14,7 +14,7 @@ run.cmd <command> [--flag value]
 ```
 
 - **工作目录**：`zhs.mjs` 所在目录（工作区根）。程序内部用 `import.meta.dirname` 定位，**从任何目录调用都可以**。
-- **幂等**：所有命令可重复执行。`docs` / `verify` / `status` / `doctor` 不访问网络。
+- **幂等**：所有命令可重复执行。`docs` / `verify` / `status` / `doctor` 不访问网络；`solve` 会访问你配置的 AI 接口（`--mock` 除外）。
 - **输出约定**：人类可读结果写 `stdout`；进度与诊断写 `stderr`；**数据一律落文件**，便于下游程序读取。
 - **退出码**：`0` 成功 · `1` 出错 · `2` 未登录 · `3` 校验不通过。
 
@@ -69,6 +69,7 @@ node zhs.mjs status
 
 ```
 node zhs.mjs login [--restart-check] [--school X] [--student-id Y] [--password Z] [--real-name N] [--account <文件>]
+                   [--browser <chromium|firefox>] [--browser-exe <路径>] [--firefox-profile <目录>]
 ```
 
 | 参数 | 类型 | 默认 | 说明 |
@@ -79,6 +80,9 @@ node zhs.mjs login [--restart-check] [--school X] [--student-id Y] [--password Z
 | `--password` | string | 凭据文件 | 密码（覆盖） |
 | `--real-name` | string | 凭据文件 | 姓名（覆盖，可选） |
 | `--account` | path | — | 从指定 JSON 读取凭据（字段名自动识别别名） |
+| `--browser` | enum | `chromium` | 登录用哪个浏览器；`firefox` 走 WebDriver BiDi |
+| `--browser-exe` | path | — | 任意浏览器：直接指定可执行文件 |
+| `--firefox-profile` | path | `browser-profile-firefox` | Firefox profile（需先完全退出 Firefox） |
 
 | 项 | 说明 |
 |---|---|
@@ -157,13 +161,22 @@ $ node zhs.mjs import D:\other-system-export.json
 
 ```
 node zhs.mjs fetch [--course <课程名>] [--dry-run] [--browser <chromium|firefox>]
+                   [--browser-exe <路径>] [--firefox-profile <目录>] [--firefox-port <端口>]
 ```
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `--course` | string | 全部课程 | 只处理指定课程，名称需与平台一致 |
 | `--dry-run` | 开关 | 关 | 只发现课程、不抓题；用于确认新课程能否识别 |
-| `--browser` | enum | `chromium` | `chromium`（Edge/Chrome，CDP 接管）或 `firefox`（当前环境不可用，见限制） |
+| `--browser` | enum | `chromium` | `chromium`（Chromium 系，CDP 接管）或 `firefox`（WebDriver BiDi 接管） |
+| `--browser-exe` | path | — | 任意浏览器：直接指定可执行文件。文件名含 firefox → 走 BiDi，其余按 Chromium 走 CDP |
+| `--firefox-profile` | path | `browser-profile-firefox` | 用指定 Firefox profile（可指向你平时已登录的那个，需先完全退出 Firefox） |
+| `--firefox-port` | number | `9224` | Firefox 的 BiDi 调试端口 |
+
+浏览器选择说明：
+
+- **Chromium 系**（Edge / Chrome / Brave / Vivaldi / Opera / 360 / QQ / Chromium）会被自动发现并启动，接管后 `navigator.webdriver=false`，可以正常过网易易盾验证码。
+- **Firefox** 走 WebDriver BiDi。首次使用需要在这个独立 profile 里**人工登录一次**；`navigator.webdriver` 由 preload script 改写成 `false`。
 
 | 项 | 说明 |
 |---|---|
@@ -234,20 +247,100 @@ node zhs.mjs verify
 
 ---
 
+### `solve` — AI 作答
+
+```
+node zhs.mjs solve [--mock] [--no-fill] [--input <md>] [--limit N] [--answer-out <md>]
+                   [--config <json>] [--model X] [--base-url U] [--api-key K]
+                   [--concurrency N] [--batch-size N]
+```
+
+把题库 Markdown 解析成题目，批量调用 OpenAI 兼容接口作答，默认产出**答案汇总**与**回填答案的题库**两份文件。解题逻辑复用 `md-ai-answer` 组件（以子进程调用），`zhs.mjs` 只负责串流程与传参。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `--mock` | 开关 | 关 | 离线试跑，**不调用任何 AI 接口**（用假答案走通全流程） |
+| `--no-fill` | 开关 | 关 | 不产出「已回填答案的题库」副本（默认产出） |
+| `--input` | path | `export/智慧树作业题库_打印版.md` | 题库来源 |
+| `--limit` | number | — | 只作答前 N 题（试跑用） |
+| `--answer-out` | path | `<input 同名>.answers.md` | 答案汇总文件路径。**不要用 `--out`**——它在本科里表示「产物输出目录」 |
+| `--config` | path | `md-ai-answer/config.json` | AI 配置（相对工作区根解析） |
+| `--model` / `--base-url` / `--api-key` | string | — | 临时覆盖 AI 配置（优先级最高） |
+| `--concurrency` / `--batch-size` | number | `3` / `5` | 并发请求数 / 每批题目数 |
+
+| 项 | 说明 |
+|---|---|
+| 前置条件 | 题库 Markdown 必须存在（先跑 `docs`）；真实作答还需配置 AI |
+| 产出文件 | `export/智慧树作业题库_打印版.answers.md`（答案汇总 + 逐题解析）、`export/智慧树作业题库_打印版.answered.md`（回填版） |
+| 退出码 | `0` 成功；`1` 未配置 AI 或作答失败 |
+| 副作用 | 调用外部 AI 接口（可能产生费用）；写答案文件。**未配置 AI 时直接报错退出，不发起任何请求** |
+
+**AI 配置来源**（任一即可，优先级：命令行 > 环境变量 > 配置文件）：
+
+```powershell
+# 方式一：配置文件
+copy md-ai-answer\config.example.json md-ai-answer\config.json   # 填 baseUrl / apiKey / model
+
+# 方式二：环境变量
+$env:AI_BASE_URL="https://api.deepseek.com/v1"; $env:AI_API_KEY="sk-..."; $env:AI_MODEL="deepseek-chat"
+```
+
+> 密钥只存在于解题进程，不写进任何产物；`config.json` 与 `export/` 均已被 `.gitignore` 忽略。
+
+**离线自测**（不需要密钥）：
+
+```
+node zhs.mjs solve --mock --limit 20
+```
+
+---
+
+### `pad` — 对答案悬浮窗
+
+```
+node zhs.mjs pad [--test <png>]
+```
+
+常驻置顶的小窗（PowerShell + WinForms）。点「识别并作答」或按 `Alt+Q` 截取当前屏幕，交给 AI 找出**正在作答的那道题**并给出答案，供你自己核对。
+
+| 项 | 说明 |
+|---|---|
+| 参数 | `--test <png>`：不开窗口，只识别指定图片并打印结果（自检用） |
+| 交互 | `Alt+Q` 全局快捷键（窗口不在前台也能触发）或点按钮 |
+| 前置条件 | 需配置 AI（`md-ai-answer/config.json` 或 `AI_*` 环境变量） |
+| 退出码 | `0` 正常退出；`1` 缺脚本或启动失败 |
+| 副作用 | 截屏并上传到 AI 接口（可能产生费用）；**不点击、不填写、不提交任何页面元素** |
+
+> 边界说明：它只读屏幕、只显示答案，不代替你操作平台。答案不保证正确，请自行核对。
+>
+> 实现说明：本机 Electron 在受限环境里启动即崩（`0xC0000005`），因此改用 PowerShell + WinForms；
+> 脚本以 UTF-8 **带 BOM** 保存（Windows PowerShell 5.1 解析中文的前提），
+> 且 HTTP 用 `HttpWebRequest` 显式按 UTF-8 收发（`Invoke-RestMethod` 会把无 charset 的 JSON 按 Latin-1 解码，中文全乱）。
+
+---
+
 ### `all` — 全流程
 
 ```
 node zhs.mjs all [--course <名>] [--formats <列表>] [--out <目录>]
 ```
 
-依次执行 `fetch` → `docs` → `verify`，参数透传。
+依次执行 `fetch` → `docs` → `verify` → `solve`，参数透传。
 
 | 项 | 说明 |
 |---|---|
 | 退出码 | `0` 全部成功；`2` 未登录（立即中止）；其余取各阶段结果 |
-| 副作用 | 同 `fetch` + `docs` |
+| 副作用 | 同 `fetch` + `docs`；配置了 AI 时还会调用外部接口并写出答案文件 |
 
 内部通过 `ZHS_SKIP_DOCS=1` 让 `fetch` 阶段跳过文档生成，保证文档只生成一次。
+
+末端 `solve` 是**条件执行**：已配置 AI（环境变量 `AI_API_KEY` 或 `md-ai-answer/config.json`）或传了 `--mock` 才跑，否则打印一行提示后跳过——所以没配 AI 时 `all` 依然可用，不会失败。
+
+**一条命令跑完整链路**（抓取 → 文档 → 校验 → 答案）：
+
+```
+node zhs.mjs all --mock     # 无密钥，离线走通全流程
+```
 
 ---
 
@@ -285,6 +378,14 @@ fetch --dry-run   # 先确认课程列表
 fetch             # 抓取（不生成文档）
 ```
 
+**只要答案（题库已抓过、文档已生成）**
+
+```
+solve                   # 调 AI 作答，产出答案汇总 + 回填版
+solve --limit 10        # 先拿 10 题试跑，确认模型答得对再全量
+solve --mock            # 不花额度，走通流程
+```
+
 ---
 
 ## 失败处理对照表
@@ -293,6 +394,7 @@ fetch             # 抓取（不生成文档）
 |---|---|---|
 | `2` | 未登录 | 跑 `node zhs.mjs login`（可能需要人工过验证码） |
 | `3` | 校验不通过 | 看 `verify` 输出：结构错误 → 数据被改坏；业务规则警告 → 有作业疑似已提交；文档不完整 → 重跑 `docs` |
+| `1`（`solve`） | 未配置 AI 或作答失败 | 未配置 → 按 `solve` 提示填 `md-ai-answer/config.json` 或设 `AI_*` 环境变量；已配置但失败 → 看 stderr 里的接口报错（密钥 / 地址 / 余额） |
 | `1`（`fetch`） | 有作业状态异常 | 看 `export/pipeline.log` 中标注的作业；通常意味着该作业已提交过 |
 | `1`（`docs`） | 某格式生成失败 | 单独跑该格式看 stderr；`xlsx` 失败通常是缺 `export/raw.json` |
 | `1`（`doctor`） | 环境不满足 | 按逐项提示修复（装依赖 / 补凭据 / 先 login） |

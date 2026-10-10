@@ -4,7 +4,7 @@
 // 浏览器一关就丢，导致「登录一次长期有效」失效。这里登录后显式把关键 Cookie
 // 重新写回带远未来过期时间的持久 Cookie，重启浏览器也不会丢。
 import { chromium } from 'playwright';
-import { ensureChromium, connect } from '../src/browser.mjs';
+import { connect } from '../src/browser.mjs';
 import { ensureLoggedIn, loadAccount, checkLogin } from '../src/login-flow.mjs';
 
 const KEEP_DAYS = 30;
@@ -12,8 +12,14 @@ const KEY_RE = /SESSION|CASTGC|jt-cas|polymas-token|JSESSIONID|INGRESSCOOKIE|rou
 
 const persistOnly = process.argv.includes('--persist-only');
 
-await ensureChromium();
-const { ctx, describe } = await connect();
+// 浏览器可插拔：默认 Chromium 系；--browser firefox 走 BiDi；--browser-exe 指定任意浏览器
+const ARGV = process.argv.slice(2);
+const argOf = (n, d = null) => { const i = ARGV.indexOf(n); return i >= 0 && ARGV[i + 1] ? ARGV[i + 1] : d; };
+const prefer = argOf('--browser', 'chromium') === 'firefox' ? 'firefox' : 'chromium';
+const browserExe = argOf('--browser-exe');
+const firefoxProfile = argOf('--firefox-profile');
+
+const { ctx, describe } = await connect({ prefer, exe: browserExe, firefoxProfile });
 console.log('浏览器:', describe);
 
 const page = ctx.pages().find((p) => /zhihuishu\.com/.test(p.url())) ?? (await ctx.newPage());
@@ -43,10 +49,16 @@ const repersist = (list) => list.map((c) => ({
   expires, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite,
 }));
 
-await ctx.addCookies(repersist(zhs));            // 全部智慧树 cookie 都延长
-await ctx.addCookies(repersist(keys));           // 关键票据再来一遍（双保险）
+// Firefox 未实现 storage.setCookies，改写不了过期时间 → 跳过，改由 Firefox 的「恢复上次会话」保留
+if (ctx.capabilities?.persistCookies === false) {
+  console.log(`   当前浏览器不支持用协议改写 cookie 过期时间（Firefox 未实现 storage.setCookies）。`);
+  console.log(`   会话改由 Firefox 自身的「恢复上次会话」保留（profile 已写入 browser.startup.page=3）。`);
+} else {
+  await ctx.addCookies(repersist(zhs));            // 全部智慧树 cookie 都延长
+  await ctx.addCookies(repersist(keys));           // 关键票据再来一遍（双保险）
+  console.log(`   已改写 ${zhs.length} 条智慧树 Cookie（其中关键票据 ${keys.length} 条），过期时间 +${KEEP_DAYS} 天`);
+}
 
-console.log(`   已改写 ${zhs.length} 条智慧树 Cookie（其中关键票据 ${keys.length} 条），过期时间 +${KEEP_DAYS} 天`);
 console.log('   关键票据清单:');
 for (const c of keys) console.log(`     ${String(c.domain).padEnd(36)} ${c.name}`);
 
@@ -58,6 +70,7 @@ console.log('\n[4] 固化后复核:', st.code === 200 ? `✅ 已登录 ${st.user
 
 // 落一份 storageState 以备他用
 try {
+  if (typeof ctx.storageState !== 'function') throw new Error('当前浏览器不支持 storageState');
   await ctx.storageState({ path: 'K:\\网页自动学习\\session\\storage-state.json' });
   console.log('   已保存 session/storage-state.json');
 } catch (e) { console.log('   storageState 保存失败:', String(e).slice(0, 90)); }
@@ -67,17 +80,18 @@ if (process.argv.includes('--restart-check')) {
   console.log('\n[5] 关闭浏览器 → 重启 → 验证登录是否还在…');
   await ctx.close().catch(() => {});
   await new Promise((r) => setTimeout(r, 4000));
-  for (const p of ['msedge', 'chrome']) {
-    try {
-      const { execFileSync } = await import('node:child_process');
-      execFileSync('taskkill', ['/F', '/IM', `${p}.exe`], { stdio: 'ignore' });
-    } catch {}
+  if (prefer !== 'firefox' && !browserExe) {
+    for (const p of ['msedge', 'chrome']) {
+      try {
+        const { execFileSync } = await import('node:child_process');
+        execFileSync('taskkill', ['/F', '/IM', `${p}.exe`], { stdio: 'ignore' });
+      } catch {}
+    }
   }
   await new Promise((r) => setTimeout(r, 4000));
 
-  const info = await ensureChromium();
-  console.log('   重启结果:', JSON.stringify({ browser: info.browser, port: info.port, started: info.started }));
-  const c2 = await connect();
+  const c2 = await connect({ prefer, exe: browserExe, firefoxProfile });
+  console.log('   重启结果:', c2.describe);
   const pg = c2.ctx.pages()[0] ?? (await c2.ctx.newPage());
   await pg.goto('https://onlineweb.zhihuishu.com/onlinestuh5', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   await pg.waitForTimeout(6000);

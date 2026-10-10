@@ -156,16 +156,30 @@ for (const [course, items] of courses) {
     if (it.startTime) bits.push(`开始：${String(it.startTime).slice(0, 10)}`);
     L.push(`*${bits.join('　·　')}*`);
     L.push('');
+    // 提示与分隔线放在题目之前：若放在末尾，会被解析器并进最后一题的选项里
+    L.push('> 提示：平台的选择题选项为随机排列，核对时请以选项内容为准；判断题的「对/错」顺序同样随机。');
+    L.push('');
+    L.push('---');
+    L.push('');
 
-    for (const [qi, q] of qs.entries()) {
-      gnum++;
-      const qt = q.questionType?.name ?? '';
+    // 题型变化时插入 ### 小节标题：解析器据此判定题型
+    // （只输出选项而不给标题时，解析器只能按选项特征猜，会把多选题误判成单选）
+    let lastType = null;
+    for (const q of qs) {
+      const typeName = q.questionType?.name ?? '其他';
+      if (typeName !== lastType) {
+        L.push(`### ${typeName}`);
+        L.push('');
+        lastType = typeName;
+      }
+
+      gnum++; // 全局连续题号：跨作业不再从 1 重新开始（避免答案匹配时同号串题）
       const score = q.questionScore ? `${q.questionScore} 分` : '';
-      const head = [qt, score].filter(Boolean).join(' · ');
+      const head = [typeName, score].filter(Boolean).join(' · ');
 
       // 纯 Markdown 写法（不嵌 HTML），保证任何 Markdown 渲染器都能正确显示：
       //   题干加粗 + 反引号包住题型/分值；选项作为缩进子列表挂在题目下
-      L.push(`${qi + 1}. **${esc(clean(q.name))}**` + (head ? `　\`［${head}］\`` : ''));
+      L.push(`${gnum}. **${esc(clean(q.name))}**` + (head ? `　\`［${head}］\`` : ''));
       L.push('');
       const opts = q.questionOptions ?? [];
       for (const [oi, opt] of opts.entries()) {
@@ -177,11 +191,6 @@ for (const [course, items] of courses) {
       }
       L.push('');
     }
-
-    L.push('> 提示：平台的选择题选项为随机排列，核对时请以选项内容为准；判断题的「对/错」顺序同样随机。');
-    L.push('');
-    L.push('---');
-    L.push('');
   }
 }
 

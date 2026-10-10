@@ -106,14 +106,18 @@ node recon\login-and-persist.mjs --restart-check
 
 ## 已知限制（需要时再看）
 
-1. **Firefox 自动化路径不通，原因已定位**
-   Playwright 自带 Firefox 用的是 `-juggler-pipe`（命名管道）。在 DSH 作业沙箱里，
-   Firefox 的管道子进程创建被拒（`SpawnTarget 0x80070005`），随后浏览器以
-   `0xC0000005` 退出。对照组：不带 `-juggler-pipe` 的裸启动可以活 12 秒以上，
-   说明 Firefox 本身正常，卡的是沙箱 + 命名管道。
-   → **Edge/Chrome 路径是可靠主路径**（CDP 接管，`navigator.webdriver=false`，能过易盾）。
-   → 如果一定要 Firefox：在你自己的普通窗口里登录智慧树后跑 `node src\firefox-session.mjs`，
-     它会把本机 Firefox 的 cookie 读出来给自动化用（当前该 profile 里还没有智慧树 cookie）。
+1. **浏览器适配：已完成，抓取层与浏览器解耦**
+   - Chromium 系（Edge/Chrome/Brave/Vivaldi/Opera/360/QQ/Chromium）自动发现 + CDP 接管；
+     `navigator.webdriver=false`，能过易盾。
+   - Firefox 走 **WebDriver BiDi**（`src\bidi.mjs` + `src\browser-firefox.mjs`）。
+     Playwright 自带 Firefox 的 `-juggler-pipe` 在沙箱里会被拒（`SpawnTarget 0x80070005`
+     → `0xC0000005` 退出），系统 Firefox 又已移除 CDP，所以 BiDi 是唯一稳定通道。
+     BiDi 下 Firefox 的 `navigator.webdriver` 默认为 true，已用 `script.addPreloadScript`
+     在页面脚本之前抹掉。
+   - 任意浏览器：`--browser-exe <路径>`。
+   - 首次用 Firefox 抓题需人工登录一次（会话存 `browser-profile-firefox`）；
+     也可 `--firefox-profile` 指向你平时已登录的 profile（需先退出 Firefox）。
+   - 仍保留 `node src\firefox-session.mjs`：只读本机 Firefox 的 cookie，不启动浏览器。
 
 2. **`config\account.json` 读不了**
    上次会话把它的权限收紧成"仅 Administrator 全控制"，而当前用户是 USER，所以

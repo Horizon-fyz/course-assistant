@@ -1,14 +1,19 @@
 // 多浏览器抽象层
-// 目标：Edge / Chrome / Firefox 都能用，调用方代码不用区分
+// 目标：任意浏览器都能用，调用方代码不用区分
 //
-// 实测结论（重要）：
-//   - Edge/Chrome 等 Chromium 系：用 --remote-debugging-port 启动，Playwright connectOverCDP 接管。
-//     这样 navigator.webdriver=false，网易易盾验证码才能正常通过。
-//   - 系统版 Firefox：--remote-debugging-port 只起 httpd.js，没有标准 /json/* 端点，
-//     无法用 connectOverCDP 接管。可用路径是 Playwright 自带 Firefox 构建。
-import { chromium, firefox } from 'playwright';
+// 两条接管路线（都是实测结论）：
+//   1. Chromium 系（Edge/Chrome/Brave/Vivaldi/Opera/360/QQ/Chromium…）：
+//      用 --remote-debugging-port 启动，Playwright connectOverCDP 接管。
+//      这样 navigator.webdriver=false，网易易盾验证码才能正常通过。
+//   2. Firefox：官方构建已移除 CDP（--remote-debugging-port 只起 httpd.js，没有 /json/* 端点），
+//      改走 WebDriver BiDi（见 bidi.mjs + browser-firefox.mjs）；
+//      navigator.webdriver 用 script.addPreloadScript 抹掉。
+//   3. 任意浏览器：用 --browser-exe <路径> 直接指定可执行文件；Chromium 系走 CDP，Firefox 走 BiDi。
+import { chromium } from 'playwright';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
+import { launchFirefoxBidi, findFirefox } from './bidi.mjs';
+import { createFirefoxBrowser } from './browser-firefox.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
 
@@ -20,30 +25,54 @@ const PF = process.env.ProgramFiles || 'C:\\Program Files';
 const PF86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
 const LOCAL = process.env.LOCALAPPDATA || '';
 
+/** Chromium 系候选：按优先级排，端口各不相同，谁在跑就用谁 */
 const CHROMIUM_CANDIDATES = [
-  {
-    name: 'edge', port: 9222, channel: 'msedge',
-    exe: [
-      join(PF86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-      join(PF, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-      join(LOCAL, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-    ],
-  },
-  {
-    name: 'chrome', port: 9223, channel: 'chrome',
-    exe: [
-      join(PF, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      join(PF86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      join(LOCAL, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-    ],
-  },
+  { name: 'edge', port: 9222, exe: [join(PF86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), join(PF, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), join(LOCAL, 'Microsoft', 'Edge', 'Application', 'msedge.exe')] },
+  { name: 'chrome', port: 9223, exe: [join(PF, 'Google', 'Chrome', 'Application', 'chrome.exe'), join(PF86, 'Google', 'Chrome', 'Application', 'chrome.exe'), join(LOCAL, 'Google', 'Chrome', 'Application', 'chrome.exe')] },
+  { name: 'chromium', port: 9225, exe: [join(PF, 'Chromium', 'Application', 'chrome.exe'), join(LOCAL, 'Chromium', 'Application', 'chrome.exe')] },
+  { name: 'brave', port: 9226, exe: [join(PF, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), join(PF86, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), join(LOCAL, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe')] },
+  { name: 'vivaldi', port: 9227, exe: [join(PF, 'Vivaldi', 'Application', 'vivaldi.exe'), join(LOCAL, 'Vivaldi', 'Application', 'vivaldi.exe')] },
+  { name: 'opera', port: 9228, exe: [join(LOCAL, 'Programs', 'Opera', 'opera.exe'), join(PF, 'Opera', 'opera.exe')] },
+  { name: '360', port: 9229, exe: [join(PF86, '360Chrome', 'Chrome', 'Application', '360chrome.exe'), join(LOCAL, '360Chrome', 'Chrome', 'Application', '360chrome.exe')] },
+  { name: 'qq', port: 9230, exe: [join(PF, 'Tencent', 'QQBrowser', 'QQBrowser.exe'), join(PF86, 'Tencent', 'QQBrowser', 'QQBrowser.exe')] },
 ];
 
-export function findChromium() {
+/** Firefox 走 BiDi，端口单独一个 */
+export const FIREFOX_PORT = 9224;
+
+/** 按可执行文件名猜浏览器种类（用于 --browser-exe） */
+function guessKind(exePath) {
+  const n = basename(String(exePath)).toLowerCase();
+  if (n.startsWith('firefox')) return 'firefox';
+  return 'chromium';
+}
+
+/**
+ * 找一个 Chromium 系浏览器。
+ * @param {string} [explicitExe] 显式指定可执行文件（任意基于 Chromium 的浏览器）
+ */
+export function findChromium(explicitExe) {
+  if (explicitExe) {
+    if (!existsSync(explicitExe)) throw new Error('指定的浏览器不存在：' + explicitExe);
+    const known = CHROMIUM_CANDIDATES.find((c) => c.exe.some((e) => e === explicitExe));
+    return known ? { ...known, exePath: explicitExe } : { name: 'custom', port: 9231, exe: [explicitExe], exePath: explicitExe };
+  }
   for (const c of CHROMIUM_CANDIDATES) {
     for (const e of c.exe) if (e && existsSync(e)) return { ...c, exePath: e };
   }
   return null;
+}
+
+/** 列出本机可用的浏览器（供 doctor / 报错提示使用） */
+export function listAvailableBrowsers() {
+  const out = [];
+  for (const c of CHROMIUM_CANDIDATES) {
+    const e = c.exe.find((p) => p && existsSync(p));
+    if (e) out.push({ kind: 'chromium', name: c.name, exe: e, port: c.port });
+  }
+  const ff = findFirefox();
+  if (ff) out.push({ kind: 'firefox', name: 'firefox', exe: ff, port: FIREFOX_PORT });
+  return out;
 }
 
 export async function cdpAlive(port, timeoutMs = 2500) {
@@ -63,12 +92,18 @@ export async function findLiveCdp() {
 }
 
 /** 启动系统 Chromium 系浏览器的远程调试（幂等：已在运行则复用） */
-export async function ensureChromium({ headless = false } = {}) {
-  const live = await findLiveCdp();
-  if (live) return { ...live, started: false };
+export async function ensureChromium({ headless = false, exe = null } = {}) {
+  // 未指定可执行文件时才「谁在跑就用谁」；指定了就认准它
+  if (!exe) {
+    const live = await findLiveCdp();
+    if (live) return { ...live, started: false };
+  }
 
-  const c = findChromium();
-  if (!c) throw new Error('未找到 Edge/Chrome 可执行文件');
+  const c = findChromium(exe);
+  if (!c) throw new Error('未找到可用的 Chromium 系浏览器（可用 --browser-exe 指定路径，或用 --browser firefox）');
+
+  const already = await cdpAlive(c.port);
+  if (already) return { browser: c.name, port: c.port, version: already, started: false };
 
   // 统一使用固定的 profile 名，避免「登录在 A、脚本用 B」导致会话丢失
   // profile 选择：固定名优先；若固定名未初始化但历史目录存在，则沿用历史目录（避免登录态丢失）
@@ -99,35 +134,29 @@ export async function ensureChromium({ headless = false } = {}) {
 }
 
 /**
- * 统一会话入口。
- * @param {{prefer?: 'chromium'|'firefox'}} opts
+ * 统一会话入口。任意浏览器都能接：Chromium 系走 CDP，Firefox 走 WebDriver BiDi。
+ * @param {{prefer?: 'chromium'|'firefox', exe?: string, firefoxProfile?: string, firefoxPort?: number}} opts
  * @returns {{kind, browserName, browser, ctx, describe, close}}
  */
-export async function connect({ prefer = 'chromium' } = {}) {
-  if (prefer === 'firefox') {
-    const profile = `${BASE}\\browser-profile-firefox`;
-    mkdirSync(profile, { recursive: true });
-    const ctx = await firefox.launchPersistentContext(profile, {
-      headless: false, locale: 'zh-CN', timezoneId: 'Asia/Shanghai',
-      viewport: { width: 1440, height: 900 },
+export async function connect({ prefer = 'chromium', exe = null, firefoxProfile = null, firefoxPort = FIREFOX_PORT } = {}) {
+  const kind = exe ? guessKind(exe) : (prefer === 'firefox' ? 'firefox' : 'chromium');
+
+  if (kind === 'firefox') {
+    const launched = await launchFirefoxBidi({
+      exe: exe || undefined,
+      profile: firefoxProfile || `${BASE}\\browser-profile-firefox`,
+      port: firefoxPort,
     });
-    return {
-      kind: 'persistent', browserName: 'firefox', browser: null, ctx,
-      describe: 'firefox @ Playwright 自带构建',
-      close: () => ctx.close().catch(() => {}),
-    };
+    return await createFirefoxBrowser(launched);
   }
 
-  const live = await findLiveCdp();
-  if (live) {
-    const b = await chromium.connectOverCDP(`http://127.0.0.1:${live.port}`);
-    return {
-      kind: 'cdp', browserName: live.browser, browser: b, ctx: b.contexts()[0],
-      describe: `${live.browser} @ CDP ${live.port} (${live.version.Browser})`,
-      close: () => b.close().catch(() => {}),
-    };
-  }
-  throw new Error('没有可用的 Chromium 系浏览器。先跑 start-browser.ps1，或改用 firefox 模式。');
+  const info = await ensureChromium({ exe });
+  const b = await chromium.connectOverCDP(`http://127.0.0.1:${info.port}`);
+  return {
+    kind: 'cdp', browserName: info.browser, browser: b, ctx: b.contexts()[0],
+    describe: `${info.browser} @ CDP ${info.port} (${info.version?.Browser || '?'})`,
+    close: () => b.close().catch(() => {}),
+  };
 }
 
 export function findPage(ctx, match = HOME) {

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "zhs-题库工具",
   "version": "0.3.0",
-  "description": "智慧树在线学堂题库工具。可随时调用的单一入口：抓取题目 → 校验 → 生成 Markdown / Word / PDF / Excel。所有命令都是幂等的，可重复执行。登录凭据支持命令行 / 环境变量 / 导入文件 / 交互录入四种输入方式。",
+  "description": "智慧树在线学堂题库工具。可随时调用的单一入口：抓取题目 → 校验 → 生成 Markdown / Word / PDF / Excel → AI 作答。所有命令都是幂等的，可重复执行。登录凭据支持命令行 / 环境变量 / 导入文件 / 交互录入四种输入方式。",
   "entrypoint": {
     "node": "zhs.mjs",
     "windows": "run.cmd",
@@ -21,7 +21,10 @@
       "ZHS_STUDENT_ID": "登录凭据：学号（覆盖凭据文件）",
       "ZHS_PASSWORD": "登录凭据：密码（覆盖凭据文件）",
       "ZHS_REAL_NAME": "登录凭据：姓名（覆盖凭据文件）",
-      "ZHS_SKIP_DOCS": "=1 时 fetch 阶段跳过文档生成（由 all 的 docs 阶段统一产出）"
+      "ZHS_SKIP_DOCS": "=1 时 fetch 阶段跳过文档生成（由 all 的 docs 阶段统一产出）",
+      "AI_BASE_URL": "解题用 AI 接口根地址（OpenAI 兼容，需含 /v1）；也可写在 md-ai-answer/config.json",
+      "AI_API_KEY": "解题用 AI 接口密钥；设了它 solve 就认为已配置。密钥只在解题进程内使用",
+      "AI_MODEL": "解题用模型名（如 deepseek-chat）"
     }
   },
   "credentials": {
@@ -85,10 +88,13 @@
         { "name": "--student-id", "type": "string", "required": false, "description": "学号（覆盖凭据文件）" },
         { "name": "--password", "type": "string", "required": false, "description": "密码（覆盖凭据文件）" },
         { "name": "--real-name", "type": "string", "required": false, "description": "姓名（覆盖凭据文件，可选）" },
-        { "name": "--account", "type": "path", "required": false, "description": "从指定 JSON 读取凭据（字段名自动识别别名）" }
+        { "name": "--account", "type": "path", "required": false, "description": "从指定 JSON 读取凭据（字段名自动识别别名）" },
+        { "name": "--browser", "type": "enum", "enum": ["chromium", "firefox"], "default": "chromium", "required": false, "description": "登录用哪个浏览器；firefox 走 WebDriver BiDi" },
+        { "name": "--browser-exe", "type": "path", "required": false, "description": "任意浏览器：直接指定可执行文件" },
+        { "name": "--firefox-profile", "type": "path", "required": false, "default": "browser-profile-firefox", "description": "Firefox profile 目录（需先完全退出 Firefox）" }
       ],
       "returns": { "kind": "text", "covers": ["凭据来源与掩码后的字段", "登录结果 realName", "关键票据清单", "重启后是否仍登录"], "exitCode": "0 成功 / 1 凭据不完整 / 2 未成功 / 3 重启后丢失" },
-      "sideEffects": "启动 Edge 并操作登录页；若出现易盾验证码会停在页面等待人工完成（最多 8 分钟）"
+      "sideEffects": "启动所选浏览器并操作登录页；若出现易盾验证码会停在页面等待人工完成（最多 8 分钟）"
     },
     {
       "name": "whoami",
@@ -118,10 +124,13 @@
       "params": [
         { "name": "--course", "type": "string", "required": false, "description": "只处理指定课程名，例如 --course 国家安全教育" },
         { "name": "--dry-run", "type": "boolean", "required": false, "description": "只发现课程，不抓题（用于确认新课程能否识别）" },
-        { "name": "--browser", "type": "enum", "enum": ["chromium", "firefox"], "default": "chromium", "required": false, "description": "指定浏览器；firefox 在当前沙箱环境不可用，见 limitations" }
+        { "name": "--browser", "type": "enum", "enum": ["chromium", "firefox"], "default": "chromium", "required": false, "description": "浏览器种类：chromium（Chromium 系，CDP 接管）或 firefox（WebDriver BiDi 接管）" },
+        { "name": "--browser-exe", "type": "path", "required": false, "description": "任意浏览器：直接指定可执行文件；文件名含 firefox 走 BiDi，其余按 Chromium 走 CDP" },
+        { "name": "--firefox-profile", "type": "path", "required": false, "default": "browser-profile-firefox", "description": "Firefox profile 目录，可指向平时已登录的那个（需先完全退出 Firefox）" },
+        { "name": "--firefox-port", "type": "number", "required": false, "default": "9224", "description": "Firefox BiDi 调试端口" }
       ],
       "returns": { "kind": "files", "files": ["export/papers.json", "export/courses-resolved.json"], "exitCode": "0 成功 / 1 有作业状态异常 / 2 未登录" },
-      "sideEffects": "启动/复用 Edge（CDP 9222）并访问智慧树页面；只读试卷，绝不提交作业",
+      "sideEffects": "启动/复用所选浏览器（Chromium 系 CDP，Firefox BiDi）并访问智慧树页面；只读试卷，绝不提交作业",
       "safe": true
     },
     {
@@ -143,14 +152,41 @@
     },
     {
       "name": "all",
-      "summary": "全流程：fetch → docs → verify",
+      "summary": "全流程：fetch → docs → verify → solve（未配置 AI 时自动跳过 solve，不阻断主流程）",
       "params": [
         { "name": "--course", "type": "string", "required": false, "description": "透传给 fetch" },
         { "name": "--formats", "type": "string", "required": false, "description": "透传给 docs" },
-        { "name": "--out", "type": "path", "required": false, "description": "透传给 docs" }
+        { "name": "--out", "type": "path", "required": false, "description": "透传给 docs" },
+        { "name": "--mock", "type": "boolean", "required": false, "description": "让末端 solve 走离线模式（不调用 AI）" }
       ],
       "returns": { "kind": "files+text", "exitCode": "0 全部成功 / 其余取各阶段最严重值" },
-      "sideEffects": "同 fetch + docs"
+      "sideEffects": "同 fetch + docs；若配置了 AI，还会调用外部接口并写出答案文件"
+    },
+    {
+      "name": "solve",
+      "summary": "AI 作答：解析题库 Markdown → 批量调用 OpenAI 兼容接口 → 输出答案汇总与回填版（复用 md-ai-answer 组件）",
+      "params": [
+        { "name": "--mock", "type": "boolean", "required": false, "description": "离线试跑，不调用任何 AI 接口" },
+        { "name": "--no-fill", "type": "boolean", "required": false, "description": "不产出「已回填答案的题库」副本（默认产出）" },
+        { "name": "--input", "type": "path", "required": false, "default": "export/智慧树作业题库_打印版.md", "description": "题库 Markdown 来源" },
+        { "name": "--limit", "type": "number", "required": false, "description": "只作答前 N 题（试跑用）" },
+        { "name": "--answer-out", "type": "path", "required": false, "description": "答案汇总文件路径；默认 <input 同名>.answers.md。注意 --out 在本工具里表示「产物输出目录」，不要混用" },
+        { "name": "--config", "type": "path", "required": false, "default": "md-ai-answer/config.json", "description": "AI 配置文件；相对工作区根解析" },
+        { "name": "--model / --base-url / --api-key", "type": "string", "required": false, "description": "临时覆盖 AI 配置（优先级高于配置文件与环境变量）" },
+        { "name": "--concurrency / --batch-size", "type": "number", "required": false, "description": "并发请求数 / 每批题目数" }
+      ],
+      "returns": { "kind": "files", "files": ["export/智慧树作业题库_打印版.answers.md", "export/智慧树作业题库_打印版.answered.md"], "exitCode": "0 成功 / 1 未配置 AI 或作答失败" },
+      "sideEffects": "调用外部 AI 接口（可能产生费用）；写答案文件。未配置 AI 时直接报错退出，不发起任何请求"
+    },
+    {
+      "name": "pad",
+      "summary": "对答案悬浮窗：置顶小窗，抓屏识别当前正在作答的题目并给出答案，供人自行核对（只读，不点击/不填写/不提交）",
+      "params": [
+        { "name": "--test", "type": "path", "required": false, "description": "不开窗口，只识别指定 PNG（自检用，便于自动化验证）" }
+      ],
+      "returns": { "kind": "text", "covers": ["置顶窗口（Alt+Q 或按钮触发）", "识别结果：题型 / 题干 / 选项 / 答案 / 解析 / 置信度"], "exitCode": "0 正常退出 / 1 缺脚本或启动失败" },
+      "sideEffects": "截取当前屏幕并上传到你配置的 AI 接口（可能产生费用）；不读写任何页面、不产生提交",
+      "safe": true
     },
     {
       "name": "help",
@@ -203,10 +239,10 @@
   },
   "limitations": [
     {
-      "id": "firefox-automation",
-      "summary": "Firefox 自动化不可用：Playwright 的 -juggler-pipe 命名管道在当前作业沙箱中被拒绝创建子进程",
-      "symptom": "浏览器以 0xC0000005 退出，日志出现 SpawnTarget 0x80070005",
-      "workaround": "使用默认的 Edge/Chrome 路径；或用 node src/firefox-session.mjs 读取本机 Firefox 已登录的 Cookie"
+      "id": "firefox-bidi",
+      "summary": "Firefox 改走 WebDriver BiDi 接管（官方构建已移除 CDP，--remote-debugging-port 只剩 httpd.js）；Playwright 自带 Firefox 的 -juggler-pipe 在当前受限沙箱中不可用",
+      "symptom": "若误用 Playwright 自带 Firefox：浏览器以 0xC0000005 退出，日志出现 SpawnTarget 0x80070005",
+      "workaround": "用 fetch --browser firefox（BiDi，navigator.webdriver 由 script.addPreloadScript 抹掉）；首次需在该独立 profile 里人工登录一次，或用 --firefox-profile 指向平时已登录的 profile（需先完全退出 Firefox）。只想拿会话不上浏览器可用 node src/firefox-session.mjs"
     },
     {
       "id": "account-json-locked",

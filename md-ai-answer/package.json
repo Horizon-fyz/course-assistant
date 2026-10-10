@@ -22,6 +22,7 @@
     "serve": "node server/index.mjs",
     "app": "electron electron/main.mjs",
     "app:nosandbox": "electron --no-sandbox electron/main.mjs",
+    "pad": "powershell -NoProfile -ExecutionPolicy Bypass -File pad/pad.ps1",
     "selftest": "node src/cli.mjs --input examples/sample-bank.md --mock --fill",
     "example:lib": "node examples/library-usage.mjs"
   },

@@ -6,10 +6,11 @@
 //
 //  常用：
 //    node zhs.mjs doctor              环境与登录态自检（先跑这个）
-//    node zhs.mjs all                 全流程：抓题 + 生成全部格式 + 自检
+//    node zhs.mjs all                 全流程：抓题 + 生成全部格式 + 自检 + AI 作答
 //    node zhs.mjs login               登录并固化会话（重启不丢）
 //    node zhs.mjs fetch               只抓题
 //    node zhs.mjs docs                只按现有数据重新生成文档
+//    node zhs.mjs solve               识别题库 + 调用 AI 作答 + 输出答案
 //    node zhs.mjs verify              校验产物是否完整
 //    node zhs.mjs status              看一眼当前状态
 //
@@ -72,6 +73,8 @@ const FILES = {
   pdf: o('智慧树作业题库_打印版.pdf'),
   html: o('智慧树作业题库_打印预览.html'),
   xlsx: o('智慧树课程数据.xlsx'),
+  answers: o('智慧树作业题库_打印版.answers.md'),
+  answered: o('智慧树作业题库_打印版.answered.md'),
   raw: join(EXPORT, 'raw.json'),
 };
 
@@ -82,6 +85,10 @@ const PY = process.env.ZHS_PYTHON || (() => {
   ];
   return cand.find((p) => p === 'python' || existsSync(p)) ?? 'python';
 })();
+
+// 解题组件（md-ai-answer）：作为独立进程被 solve 调用，二者通过题库 MD 交接
+const MDAI_DIR = join(ROOT, 'md-ai-answer');
+const MDAI_CLI = join(MDAI_DIR, 'src', 'cli.mjs');
 
 const node = process.execPath;
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { stdio: 'inherit', cwd: ROOT, ...opts });
@@ -141,15 +148,17 @@ function accountNames() {
 
 function cmdHelp() {
   head('智慧树题库工具 · 统一入口');
-  say('一个命令，可持续产出：抓取 → 校验 → 生成 Markdown / Word / PDF / Excel');
+  say('一个命令，可持续产出：抓取 → 校验 → 生成 Markdown / Word / PDF / Excel → AI 作答');
   say(`${C.d}接口文档见 docs/README.md（CLI / Node API / 数据契约 / 机器可读清单）${C.r}`);
   head('常用命令');
   const rows = [
     ['doctor', '环境与登录态自检（先跑这个）'],
-    ['all', '全流程：抓题 + 生成全部格式 + 自检'],
+    ['all', '全流程：抓题 + 生成全部格式 + 自检 + AI 作答'],
     ['login', '登录并固化会话（浏览器重启不丢）'],
     ['fetch', '只抓题（不生成文档）'],
     ['docs', '只按现有数据重新生成文档'],
+    ['solve', '只作答：识别题库 → 调用 AI → 输出答案'],
+    ['pad', '对答案悬浮窗：抓屏识别当前题目并给答案（只读，不代填）'],
     ['verify', '校验产物：数据契约 + 文档完整性 + 产物清单'],
     ['status', '看一眼当前状态'],
   ];
@@ -160,6 +169,8 @@ function cmdHelp() {
   say('  fetch --browser firefox        指定浏览器（默认 Edge）');
   say('  docs  --formats md,pdf         只产出指定格式（md / md-bare / docx / pdf / xlsx）');
   say('  docs  --out D:\\题库            产物输出到别的目录');
+  say('  solve --mock                   离线试跑作答（不调用 AI）');
+  say('  solve --limit 20 --model X     只作答前 20 题 / 临时换模型');
   say('  login --restart-check          登录后顺带验证「关掉浏览器再开仍在线」');
   head('退出码');
   say('  0 成功　1 出错　2 未登录　3 校验不通过');
@@ -190,6 +201,7 @@ function cmdStatus() {
     ['Markdown', FILES.md], ['纯 Markdown', FILES.mdBare],
     ['Word', FILES.docx], ['PDF', FILES.pdf], ['打印预览 HTML', FILES.html],
     ['Excel', FILES.xlsx],
+    ['答案汇总（AI）', FILES.answers], ['答案回填版（AI）', FILES.answered],
   ];
   for (const [label, p] of rows) say(`  ${label.padEnd(18)} ${kb(p).padEnd(10)} ${when(p)}`);
 
@@ -261,6 +273,12 @@ function cmdLogin() {
 
   const args = [script];
   if (has('restart-check')) args.push('--restart-check');
+  // 浏览器可插拔：与 fetch 保持一致
+  if (flag('browser') === 'firefox') args.push('--browser', 'firefox');
+  for (const k of ['browser-exe', 'firefox-profile']) {
+    const v = flag(k);
+    if (typeof v === 'string' && v) args.push('--' + k, v);
+  }
   process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || join(ROOT, 'ms-playwright');
   const res = run(node, args);
   const code = res.status ?? 1;
@@ -366,6 +384,11 @@ function cmdFetch() {
   const course = flag('course');
   if (course) args.push('--course', course);
   if (flag('browser') === 'firefox') args.push('--browser', 'firefox');
+  // 任意浏览器：直接指定可执行文件（Chromium 系走 CDP，Firefox 走 BiDi）
+  for (const k of ['browser-exe', 'firefox-profile', 'firefox-port']) {
+    const v = flag(k);
+    if (typeof v === 'string' && v) args.push('--' + k, v);
+  }
   process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || join(ROOT, 'ms-playwright');
   // 文档生成交给 zhs.mjs docs 统一做，避免和 all 里的 docs 阶段重复生成
   process.env.ZHS_SKIP_DOCS = '1';
@@ -429,6 +452,85 @@ function cmdDocs() {
   return 0;
 }
 
+/**
+ * AI 是否已配置：环境变量 AI_API_KEY，或 md-ai-answer/config.json 里有非占位的 apiKey。
+ * 只用来决定 all 末端要不要自动接上 solve（未配置就跳过，不阻断主流程）。
+ */
+function aiConfigState() {
+  if (String(process.env.AI_API_KEY || '').trim()) return { ok: true, from: '环境变量 AI_API_KEY' };
+  const file = join(MDAI_DIR, 'config.json');
+  if (existsSync(file)) {
+    try {
+      const key = String(JSON.parse(readFileSync(file, 'utf8')).apiKey || '').trim();
+      if (key && !/你的key|your[-_ ]?key|^sk-xxx/i.test(key)) {
+        return { ok: true, from: file.slice(ROOT.length + 1) };
+      }
+    } catch { /* 配置损坏按未配置处理 */ }
+  }
+  return { ok: false, file };
+}
+
+function cmdSolve() {
+  head('AI 作答');
+  if (!existsSync(MDAI_CLI)) { bad('缺少 md-ai-answer\\src\\cli.mjs（解题组件）'); return 1; }
+
+  const input = resolve(ROOT, typeof flag('input') === 'string' ? flag('input') : FILES.md);
+  if (!existsSync(input)) { bad(`找不到题库文件：${input}`); say('先跑：node zhs.mjs docs'); return 1; }
+
+  const mock = has('mock');
+  if (!mock) {
+    const st = aiConfigState();
+    if (!st.ok) {
+      bad('未配置 AI 接口，无法作答。');
+      say('  1) 复制 md-ai-answer\\config.example.json 为 md-ai-answer\\config.json，填好 baseUrl / apiKey / model');
+      say('  2) 或设置环境变量：AI_BASE_URL / AI_API_KEY / AI_MODEL（密钥只在解题进程内使用）');
+      say('  3) 只想离线试跑：node zhs.mjs solve --mock');
+      return 1;
+    }
+    say(`AI 配置   ${st.from}`);
+  }
+
+  // 透传给 md-ai-answer CLI。注意 --out 在本工具里已表示「产物输出目录」，
+  // 所以答案文件用 --answer-out 指定，避免两个含义打架。
+  const args = [MDAI_CLI, '--input', input];
+  const answerOut = flag('answer-out');
+  if (typeof answerOut === 'string' && answerOut) args.push('--out', resolve(ROOT, answerOut));
+  if (typeof flag('config') === 'string' && flag('config')) args.push('--config', resolve(ROOT, flag('config')));
+  for (const k of ['model', 'base-url', 'api-key', 'concurrency', 'batch-size', 'limit']) {
+    const v = flag(k);
+    if (typeof v === 'string' && v) args.push('--' + k, v);
+  }
+  if (mock) args.push('--mock');
+  if (!has('no-fill')) args.push('--fill'); // 默认同时产出「已回填答案的题库」副本
+
+  say(`题库      ${input}`);
+  say(`模式      ${mock ? '离线 mock（不调用 AI）' : '调用 AI 接口'}`);
+  const code = run(node, args, { cwd: MDAI_DIR }).status ?? 1;
+  if (code === 0) ok('答案已生成');
+  else bad(`作答失败（退出码 ${code}）`);
+  return code;
+}
+
+function cmdPad() {
+  head('对答案悬浮窗');
+  const dir = join(ROOT, 'md-ai-answer');
+  const script = join(dir, 'pad', 'pad.ps1');
+  if (!existsSync(script)) { bad('缺少 md-ai-answer\\pad\\pad.ps1'); return 1; }
+
+  const st = aiConfigState();
+  if (!st.ok) warn('AI 尚未配置，悬浮窗能开但不会出答案。见 solve 的配置提示。');
+
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script];
+  const testShot = flag('test');           // --test <png>：不开窗口，只识别一张图（自检）
+  if (typeof testShot === 'string' && testShot) args.push('-Test', resolve(ROOT, testShot));
+
+  say('常驻置顶小窗：点「识别并作答」或按 Alt+Q 抓屏识别；关闭窗口即退出。');
+  say('说明：只读屏幕，不点击、不填写、不提交任何东西。');
+  const r = run('powershell.exe', args, { cwd: dir });
+  if (r.error) { bad('启动失败：' + r.error.message); return 1; }
+  return r.status ?? 0;
+}
+
 function cmdVerify() {
   head('校验产物');
   if (!existsSync(FILES.papers)) { bad('缺少 export\\papers.json'); return 1; }
@@ -466,9 +568,19 @@ function cmdAll() {
   if (fetchCode !== 0 && fetchCode !== 1) return fetchCode;   // 2=未登录 等
   const docsCode = cmdDocs();
   const verifyCode = cmdVerify();
+
+  // 末端接上「AI 作答」，让 all 一条命令跑到答案；未配置 AI 时跳过，不阻断主流程
+  let solveCode = 0;
+  if (aiConfigState().ok || has('mock')) {
+    solveCode = cmdSolve();
+  } else {
+    head('AI 作答');
+    warn('跳过：尚未配置 AI 接口。配好后跑 node zhs.mjs solve（加 --mock 可离线试跑）');
+  }
+
   head('完成');
   say('  node zhs.mjs status     查看状态');
-  return verifyCode || docsCode || 0;
+  return solveCode || verifyCode || docsCode || 0;
 }
 
 // ═════════════════ 分发 ═════════════════
@@ -479,6 +591,8 @@ const COMMANDS = {
   login: cmdLogin,
   fetch: cmdFetch,
   docs: cmdDocs,
+  solve: cmdSolve,
+  pad: cmdPad,
   verify: cmdVerify,
   all: cmdAll,
   whoami: cmdWhoami,

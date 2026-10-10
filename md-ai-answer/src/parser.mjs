@@ -219,11 +219,13 @@ export function parseQuestionBank(markdown) {
 
 /**
  * 把一道题渲染成适合放进提示词的紧凑文本。
+ * 题号用全局唯一的 `q.id`（而非原卷题号 `q.number`）：同一份题库里原卷题号
+ * 可能跨小节/跨试卷重复，模型回填时会串题，用 id 才能稳定对号入座。
  * @param {Question} q
  * @returns {string}
  */
 export function formatQuestionForPrompt(q) {
   const typeLabel = TYPE_LABELS[q.type] || '题目';
   const optionText = q.options.map((o) => `${o.key}. ${o.text}`).join('\n');
-  return [`[#${q.number}] (${typeLabel})`, q.stem, optionText || '(无选项)'].join('\n');
+  return [`[#${q.id}] (${typeLabel})`, q.stem, optionText || '(无选项)'].join('\n');
 }

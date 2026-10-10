@@ -87,7 +87,7 @@ export function buildMessages(batch, config, total) {
   const system = [
     config?.systemPrompt || '你是一名严谨的答题助手。',
     '严格只输出一个 JSON 数组，不要输出任何解释性文字。',
-    '数组中每个元素形如 {"number":"题号","answer":"答案","reason":"简要理由(<=40字)","confidence":0-1}。',
+    '数组中每个元素形如 {"number":"题号(方括号内的数字)","answer":"答案","reason":"简要理由(<=40字)","confidence":0-1}。',
     '题型作答规则：',
     ...Object.entries(TYPE_RULES).map(([k, v]) => `- ${k}: ${v}`),
   ].join('\n');
@@ -138,7 +138,8 @@ function matchAnswersToBatch(batch, parsed) {
 
   const out = new Map();
   batch.forEach((q, idx) => {
-    const item = byNumber.get(String(q.number)) ?? byNumber.get(String(q.id)) ?? arr[idx];
+    // 优先用全局唯一的 id 匹配（原卷题号可能重复），再退回题号/顺序
+    const item = byNumber.get(String(q.id)) ?? byNumber.get(String(q.number)) ?? arr[idx];
     out.set(q.id, normalizeAnswerItem(item));
   });
   return out;

@@ -212,19 +212,3 @@ node src\check-download-capability.mjs # 各课程下载权限与资料数
 说明纯静态分析的域名清单**必然不完整**，需靠运行时抓包补齐。
 
 ---
-
-## 10. 考试环境的强风控信号（重要）
-
-考试页会加载以下检测接口，**平台会采集你的设备指纹与作答行为**：
-
-| 接口 | 返回示例 | 含义 |
-|---|---|---|
-| `common/queryMacAddress` | `{"macAddress":"4A-E2-BF-99-A2-48"}` | **采集网卡 MAC** |
-| `common/queryComputerIp` | `{"computerIp":"172.20.9.114"}` | **采集内网 IP** |
-| `exam/getLoginSchoolInfo` | `schoolId=5371` | 学校环境绑定 |
-| `appeal/getStuExceptionAction` | `{"examStatus":1,"makeUpExamStatus":1}` | 异常状态 |
-| `student/getStuProgressRule` | `{"makeUpStudent":"1"}` | 补考规则 |
-| `collector.zhihuishu.com/.../collect` | 埋点上报 | **作答行为采集** |
-
-这意味着：**考试过程中的任何自动化操作都是可被识别和追溯的**，不只是违反学术诚信，还有明确的技术留痕与惩罚机制。
-

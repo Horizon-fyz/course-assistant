@@ -67,6 +67,7 @@ const HELP = `用法: node src/cli.mjs --input 题库.md [--out 答案.md] [--fi
   -o, --out         答案输出文件
   -c, --config      配置文件（默认 ./config.json）
       --fill        额外生成回填答案的题库副本
+      --answers-json <path>  结构化答案 JSON（默认 <题库>.answers.json，--answers-json=false 关闭）
       --mock        离线模拟，不调用 AI 接口
       --limit N     只处理前 N 题
       --base-url    覆盖接口地址
@@ -140,6 +141,32 @@ export async function main(argv = process.argv.slice(2)) {
     const filledPath = `${input.replace(/\.md$/i, '')}.answered.md`;
     await writeFile(filledPath, renderFilledMarkdown({ sourceText, questions, answers }), 'utf8');
     console.log(`回填题库已写入：${filledPath}`);
+  }
+
+  // 结构化答案：供「自动回填网页」使用（按题干匹配，不依赖题号顺序）
+  const jsonOut = typeof args['answers-json'] === 'string' && args['answers-json']
+    ? args['answers-json']
+    : `${input.replace(/\.md$/i, '')}.answers.json`;
+  if (args['answers-json'] !== 'false') {
+    const packed = {
+      meta: { ...meta, generatedAt: new Date().toISOString(), count: questions.length },
+      questions: questions.map((q) => {
+        const a = answers.get(q.id) || {};
+        return {
+          id: q.id,
+          number: q.number,
+          section: q.section,
+          type: q.type,
+          stem: q.stem,
+          options: q.options.map((o) => ({ key: o.key, text: o.text })),
+          answer: a.answer || '',
+          reason: a.reason || '',
+          confidence: typeof a.confidence === 'number' ? a.confidence : null,
+        };
+      }),
+    };
+    await writeFile(jsonOut, JSON.stringify(packed, null, 2), 'utf8');
+    console.log(`结构化答案：${jsonOut}`);
   }
 
   return 0;
