@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "zhs-题库工具",
-  "version": "0.2.0",
-  "description": "智慧树在线学堂题库工具。可随时调用的单一入口：抓取题目 → 校验 → 生成 Markdown / Word / PDF / Excel。所有命令都是幂等的，可重复执行。",
+  "version": "0.3.0",
+  "description": "智慧树在线学堂题库工具。可随时调用的单一入口：抓取题目 → 校验 → 生成 Markdown / Word / PDF / Excel。所有命令都是幂等的，可重复执行。登录凭据支持命令行 / 环境变量 / 导入文件 / 交互录入四种输入方式。",
   "entrypoint": {
     "node": "zhs.mjs",
     "windows": "run.cmd",
@@ -16,8 +16,38 @@
     },
     "optional": {
       "ZHS_PYTHON": "指定 python 解释器路径（默认自动探测 DSH 打包运行时）",
-      "PLAYWRIGHT_BROWSERS_PATH": "浏览器运行时目录；不设时自动回退到 <工作区>/ms-playwright"
+      "PLAYWRIGHT_BROWSERS_PATH": "浏览器运行时目录；不设时自动回退到 <工作区>/ms-playwright",
+      "ZHS_SCHOOL": "登录凭据：学校（覆盖凭据文件）",
+      "ZHS_STUDENT_ID": "登录凭据：学号（覆盖凭据文件）",
+      "ZHS_PASSWORD": "登录凭据：密码（覆盖凭据文件）",
+      "ZHS_REAL_NAME": "登录凭据：姓名（覆盖凭据文件）",
+      "ZHS_SKIP_DOCS": "=1 时 fetch 阶段跳过文档生成（由 all 的 docs 阶段统一产出）"
     }
+  },
+  "credentials": {
+    "description": "登录凭据支持多种输入方式，优先级从高到低；逐字段决定，可混用",
+    "precedence": [
+      "命令行：--school / --student-id / --password / --real-name",
+      "环境变量：ZHS_SCHOOL / ZHS_STUDENT_ID / ZHS_PASSWORD / ZHS_REAL_NAME",
+      "--account <path> 指定的任意 JSON 文件（字段名自动识别别名）",
+      "config/credentials.json（凭据库，本工具写入）",
+      "config/account-live.json → config/account.json（兼容旧文件）"
+    ],
+    "requiredFields": ["school", "studentId", "password"],
+    "optionalFields": ["realName"],
+    "fieldAliases": {
+      "school": ["school", "schoolName", "university", "college", "school_name", "学校", "院校", "学校名称"],
+      "studentId": ["studentId", "student_id", "studentNo", "studentNumber", "sid", "unid", "userId", "userid", "userName", "username", "account", "loginName", "学号", "账号", "用户名"],
+      "realName": ["realName", "real_name", "name", "displayName", "nickName", "nickname", "姓名", "真实姓名"],
+      "password": ["password", "passwd", "pwd", "pass", "secret", "密码"]
+    },
+    "security": {
+      "gitignored": "config/ 已整体忽略，仅放行 account.template.json",
+      "fileHardening": "写入凭据时执行 icacls /inheritance:r /grant:r <当前用户>:F，只留当前用户可读写",
+      "masking": "whoami 与日志中密码只显示掩码",
+      "docsExcludePassword": true
+    },
+    "documentation": "docs/CREDENTIALS.md"
   },
   "exitCodes": {
     "0": "成功",
@@ -50,10 +80,37 @@
       "name": "login",
       "summary": "登录智慧树并把会话票据改写成持久 Cookie（浏览器重启后仍在线）",
       "params": [
-        { "name": "--restart-check", "type": "boolean", "required": false, "description": "登录后关闭浏览器再重启，验证会话是否存活" }
+        { "name": "--restart-check", "type": "boolean", "required": false, "description": "登录后关闭浏览器再重启，验证会话是否存活" },
+        { "name": "--school", "type": "string", "required": false, "description": "学校名（覆盖凭据文件）" },
+        { "name": "--student-id", "type": "string", "required": false, "description": "学号（覆盖凭据文件）" },
+        { "name": "--password", "type": "string", "required": false, "description": "密码（覆盖凭据文件）" },
+        { "name": "--real-name", "type": "string", "required": false, "description": "姓名（覆盖凭据文件，可选）" },
+        { "name": "--account", "type": "path", "required": false, "description": "从指定 JSON 读取凭据（字段名自动识别别名）" }
       ],
-      "returns": { "kind": "text", "covers": ["登录结果 realName", "关键票据清单", "重启后是否仍登录"], "exitCode": "0 成功 / 2 未成功 / 3 重启后丢失" },
+      "returns": { "kind": "text", "covers": ["凭据来源与掩码后的字段", "登录结果 realName", "关键票据清单", "重启后是否仍登录"], "exitCode": "0 成功 / 1 凭据不完整 / 2 未成功 / 3 重启后丢失" },
       "sideEffects": "启动 Edge 并操作登录页；若出现易盾验证码会停在页面等待人工完成（最多 8 分钟）"
+    },
+    {
+      "name": "whoami",
+      "summary": "显示当前生效的凭据及其来源，并查询平台真实身份，把真实姓名/学校写回凭据库",
+      "params": [
+        { "name": "--school / --student-id / --password / --real-name", "type": "string", "required": false, "description": "临时覆盖，用于确认优先级" }
+      ],
+      "returns": { "kind": "text", "covers": ["每个字段的实际取值与来源", "平台返回的 realName / uuid", "文档封面将显示的名字"], "exitCode": "0 成功 / 2 未登录" },
+      "sideEffects": "连接浏览器查询登录态；把 realName 写回 config/credentials.json；生成 session/cookies.json 与 storage-state.json"
+    },
+    {
+      "name": "import",
+      "summary": "导入个人信息（可自定义输入）：从任意 JSON 导入，或交互式录入",
+      "params": [
+        { "name": "<文件.json>", "type": "path", "required": false, "description": "来源文件；字段名自动识别别名，支持带 BOM 的 JSON" },
+        { "name": "--prompt", "type": "boolean", "required": false, "description": "交互式录入（密码不回显）；自动化场景可从管道喂入 4 行" },
+        { "name": "--from", "type": "path", "required": false, "description": "等价于位置参数的文件路径" },
+        { "name": "--save-to", "type": "path", "required": false, "default": "config/credentials.json", "description": "写入目标" },
+        { "name": "--school / --student-id / --real-name / --password", "type": "string", "required": false, "description": "字段覆盖或补齐" }
+      ],
+      "returns": { "kind": "text", "covers": ["字段映射（原字段名 → 标准字段）", "未识别的字段", "写入结果与是否收紧权限"], "exitCode": "0 成功 / 1 失败（读不到、缺字段、被取消）" },
+      "sideEffects": "写入凭据文件；尝试收紧文件权限到仅当前用户"
     },
     {
       "name": "fetch",
@@ -125,14 +182,23 @@
     "export/智慧树课程数据.xlsx": { "description": "课程总览 + 章节视频明细 + 数据来源说明", "producedBy": "docs", "requires": "export/raw.json" }
   },
   "config": {
-    "config/account-live.json": {
-      "description": "登录凭据（不要提交到仓库）",
+    "config/credentials.json": {
+      "description": "凭据库（本工具写入；也是 login/fetch/docs 的默认凭据来源）。已被 .gitignore 忽略",
       "fields": {
         "school": { "type": "string", "required": true, "description": "学校名，必须与登录页下拉框完全一致" },
         "studentId": { "type": "string", "required": true },
         "password": { "type": "string", "required": true },
-        "realName": { "type": "string", "required": false, "description": "显示名，用于文档封面" }
+        "realName": { "type": "string", "required": false, "description": "显示名；whoami 会用平台真值回写" },
+        "updatedAt": { "type": "string", "required": false, "description": "最后写入时间（ISO 8601）" }
       }
+    },
+    "config/account.template.json": {
+      "description": "凭据模板：唯一允许提交到仓库的 config 文件。复制为 credentials.json 后填写。",
+      "fields": {}
+    },
+    "config/account-live.json": {
+      "description": "兼容旧版凭据文件（仍会被读取，优先级低于 credentials.json）",
+      "fields": {}
     }
   },
   "limitations": [

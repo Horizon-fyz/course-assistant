@@ -1,7 +1,7 @@
 # 智慧树在线学堂 — 站点侦察与自动化基础报告
 
 > 生成时间：2026-10-10（2026 年换机后已做路径迁移，见 §8）
-> 运行环境：Windows / 用户 `FYZ` / 工作区 = 本文件所在目录 / Node v24
+> 运行环境：Windows / 用户 `USER` / 工作区 = 本文件所在目录 / Node v24
 > 目标站点：https://onlineweb.zhihuishu.com/onlinestuh5
 > 会话身份：示例用户（uuid `demo-uuid`，示例大学 schoolId `5371`，学生身份 identityType=4）
 
@@ -241,7 +241,7 @@ POST https://studyservice-api.zhihuishu.com/gateway/t/v1/learning/queryStuyInfo
 
 | 项 | 值 |
 |---|---|
-| 用户 / 工作区 | `FYZ` / 见本文件所在目录 |
+| 用户 / 工作区 | `USER` / 见本文件所在目录 |
 | Node | `C:\Program Files\nodejs\node.exe` (v24.16.0) |
 | Python | `C:\Python314\python.exe`；DSH 自带运行时亦可用 |
 | Edge | `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe` ✅ |
@@ -251,7 +251,7 @@ POST https://studyservice-api.zhihuishu.com/gateway/t/v1/learning/queryStuyInfo
 
 ### 8.3 待人工处理：两处文件权限（当前登录令牌未提权，脚本改不了）
 
-本机账号 `FYZ` 在 Administrators 组里，但**进程令牌是未提权的**（中等完整性），
+本机账号 `USER` 在 Administrators 组里，但**进程令牌是未提权的**（中等完整性），
 所以下面两处只能由你用**管理员身份**的 PowerShell 修一次。
 
 **(1) `config\account.json` 读不出来** —— 权限在旧机器上被收紧到当时那个用户：

@@ -68,20 +68,88 @@ node zhs.mjs status
 ### `login` — 登录并固化会话
 
 ```
-node zhs.mjs login [--restart-check]
+node zhs.mjs login [--restart-check] [--school X] [--student-id Y] [--password Z] [--real-name N] [--account <文件>]
 ```
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `--restart-check` | 开关 | 关 | 登录后关闭浏览器再重启，验证会话是否存活 |
+| `--school` | string | 凭据文件 | 学校名（覆盖） |
+| `--student-id` | string | 凭据文件 | 学号（覆盖） |
+| `--password` | string | 凭据文件 | 密码（覆盖） |
+| `--real-name` | string | 凭据文件 | 姓名（覆盖，可选） |
+| `--account` | path | — | 从指定 JSON 读取凭据（字段名自动识别别名） |
 
 | 项 | 说明 |
 |---|---|
-| 返回值 | stdout 文本：登录结果（`realName`）、关键票据清单、重启后是否仍登录 |
-| 退出码 | `0` 成功；`2` 未登录成功；`3` 重启后会话丢失 |
+| 返回值 | stdout 文本：凭据来源与掩码后的字段、登录结果（`realName`）、关键票据清单、重启后是否仍登录 |
+| 退出码 | `0` 成功；`1` 凭据不完整；`2` 未登录成功；`3` 重启后会话丢失 |
 | 副作用 | 启动 Edge 并操作登录页表单；**会写浏览器资料目录** |
 
+> **凭据不完整时**不会直接失败退出，而是打印五种可用输入方式（命令行 / 环境变量 / 导入文件 / 交互录入 / 凭据库）。详见 [`CREDENTIALS.md`](CREDENTIALS.md)。
+
 > **阻塞式交互**：若出现网易易盾人机验证，脚本会停在验证页并等待人工完成（默认最多 8 分钟），完成后自动继续。调用方若无人值守，应设足够超时。
+
+---
+
+### `whoami` — 查看当前身份
+
+```
+node zhs.mjs whoami [--school X] [--student-id Y] [--password Z] [--real-name N]
+```
+
+| 项 | 说明 |
+|---|---|
+| 返回值 | 每个凭据字段的**实际取值与来源**（`cli` / `env` / 文件名）、平台返回的 `realName` 与 `uuid`、文档封面将显示的名字 |
+| 退出码 | `0` 成功；`2` 未登录或浏览器不可用 |
+| 副作用 | 连接浏览器查询登录态；**把平台真实姓名写回 `config/credentials.json`**；生成 `session/cookies.json` 与 `session/storage-state.json` |
+
+用于排查"凭据到底从哪来的"，以及把平台真值同步到文档封面。
+
+```
+当前身份
+凭据来源：credentials.json + password:env
+  学校   示例大学        ← credentials.json
+  学号   00000000000     ← credentials.json
+  姓名   示例用户          ← credentials.json
+  密码   L*********      ← env
+
+  查询平台真实身份… ✓ 已登录：示例用户
+    姓名 示例用户　uuid demo-uuid
+✓ 已把真实姓名写回凭据库：realName = 示例用户
+```
+
+---
+
+### `import` — 导入个人信息
+
+```
+node zhs.mjs import <文件.json> [--save-to <路径>] [--school X] [--student-id Y] [--real-name N] [--password Z]
+node zhs.mjs import --prompt [--save-to <路径>] [字段覆盖参数]
+```
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `<文件.json>` / `--from` | path | — | 来源文件；**字段名自动识别别名**，支持带 BOM 的 JSON |
+| `--prompt` | 开关 | 关 | 交互式录入，密码不回显（TTY）；非 TTY 时按行读取，便于自动化 |
+| `--save-to` | path | `config/credentials.json` | 写入目标 |
+| `--school` / `--student-id` / `--real-name` / `--password` | string | — | 字段覆盖或补齐 |
+
+| 项 | 说明 |
+|---|---|
+| 返回值 | 字段映射（`原字段名 → 标准字段`）、未识别的字段、写入结果与是否收紧权限 |
+| 退出码 | `0` 成功；`1` 失败（读不到文件 / 归一后缺字段 / 交互录入被取消） |
+| 副作用 | 写入凭据文件；尝试 `icacls` 收紧权限到仅当前用户 |
+
+可识别的字段别名：`school` / `schoolName` / `university` / `college` / `学校` / `院校` / `学校名称` → `school`；`studentId` / `studentNo` / `sid` / `unid` / `userName` / `account` / `学号` / `账号` / `用户名` → `studentId`；`realName` / `name` / `nickName` / `姓名` → `realName`；`password` / `passwd` / `pwd` / `pass` / `secret` / `密码` → `password`。完整列表见 [`CREDENTIALS.md`](CREDENTIALS.md)。
+
+```
+$ node zhs.mjs import D:\other-system-export.json
+✓ 导入成功 → K:\网页自动学习\config\credentials.json（权限已收紧）
+  字段映射: 学校名称 → school，学号 → studentId，密码 → password
+! 未识别字段（已忽略）: 备注
+  写入字段: school, studentId, password
+```
 
 ---
 

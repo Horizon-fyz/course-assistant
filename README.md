@@ -33,16 +33,21 @@ Windows 下也可以直接**双击 `run.cmd`** —— 会做环境自检并显�
 |---|---|
 | `run.cmd doctor` | 环境自检：Node / Python 文档库 / Playwright / 浏览器运行时 / 凭据 / 登录资料 / 题库数据 |
 | `run.cmd status` | 当前状态：账号、题库规模（几门课几份作业几道题）、每个产物的时间与大小，并提示哪个产物过期 |
+| `run.cmd import` | **导入个人信息**：从任意 JSON 导入，或 `--prompt` 交互录入 |
+| `run.cmd whoami` | 查看当前生效的凭据与来源，并把平台真实姓名写回 |
 | `run.cmd login` | 登录智慧树并把会话票据改写为持久 Cookie（关掉浏览器仍在线） |
 | `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查 |
 | `run.cmd docs` | 只生成文档：Markdown（打印版 + 纯文本）、Word、PDF、打印预览 HTML、Excel |
-| `run.cmd verify` | 校验产物完整性：逐题逐选项回查 Markdown，并列出所有产物 |
-| `run.cmd all` | 上面四步串起来：fetch → docs → verify |
+| `run.cmd verify` | 校验产物：数据契约 + 文档完整性 + 产物清单 |
+| `run.cmd all` | 上面几步串起来：fetch → docs → verify |
 
 ### 细参
 
 ```powershell
-run.cmd fetch --course 国家安全教育     # 只抓某一门课
+run.cmd import --prompt                 # 交互录入账号（密码不回显）
+run.cmd import D:\other-system.json      # 导入别人/别的系统导出的凭据文件
+run.cmd login --student-id 00000000000 --password "***"   # 临时指定，不落盘
+run.cmd fetch --course 国家安全教育       # 只抓某一门课
 run.cmd fetch --dry-run                 # 只发现课程，不抓题（确认新课程能否识别）
 run.cmd fetch --browser firefox         # 指定浏览器（默认 Edge）
 run.cmd docs  --formats md,pdf          # 只产出指定格式
@@ -53,6 +58,30 @@ run.cmd login --restart-check           # 登录后顺带验证「重启浏览�
 ### 退出码
 
 `0` 成功　`1` 出错　`2` 未登录　`3` 校验不通过 —— 方便接进计划任务或批处理。
+
+---
+
+## 个人信息怎么填（可自定义输入）
+
+工具**不要求**你把账号密码写死在某个文件里，以下方式任选，优先级高的覆盖低的：
+
+| 方式 | 命令 |
+|---|---|
+| 交互录入（推荐，密码不回显） | `run.cmd import --prompt` |
+| 导入任意 JSON（字段名自动识别） | `run.cmd import D:\xxx.json` |
+| 命令行临时指定 | `run.cmd login --school 示例大学 --student-id 00000000000 --password "***"` |
+| 环境变量（适合 CI） | `$env:ZHS_STUDENT_ID='...'; $env:ZHS_PASSWORD='...'` |
+| 凭据库文件 | `Copy-Item config\account.template.json config\credentials.json` 后编辑 |
+
+字段名不用统一 —— `学校名称` / `university` / `学校` 都能识别为学校，`学号` / `userId` / `account` 都能识别为学号。查看当前实际生效的来源：
+
+```powershell
+run.cmd whoami
+```
+
+完整说明（含别名表、优先级、安全约定）见 [`docs/CREDENTIALS.md`](docs/CREDENTIALS.md)。
+
+> `config/` 已被 `.gitignore` 忽略，凭据不会误提交；写入时还会尝试把文件权限收紧到仅当前用户。
 
 ---
 

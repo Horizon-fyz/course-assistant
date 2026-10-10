@@ -10,13 +10,24 @@ browser-profile-firefox/
 
 # ── 会话 / 登录态 / Cookie / 凭据（禁止提交）──
 session/
-config/
+# 用 config/* 而不是 config/：写成 config/ 会排除整个目录，
+# git 不会进入被排除的目录，后面的 ! 白名单永远不生效（模板也会被挡掉）。
+config/*
+!config/account.template.json
 _temp/
 .session-archive/
 .acl-recovery/
 .acl-reports/
 *.zip
 dsh-session-*
+
+# ── 文档（要保留；上面的 export/*.md 已忽略导出稿）──
+!README.md
+!HANDOFF.md
+!SITE-REPORT.md
+!DOMAIN-REPORT.md
+!docs/
+!docs/**
 
 # ── 采集与导出产物（含个人数据 / 截图，仅保留脚本）──
 recon/*/

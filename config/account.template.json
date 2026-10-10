@@ -1,0 +1,20 @@
+{
+  "school": "在这里填学校全名，必须与登录页下拉框文本完全一致",
+  "studentId": "在这里填学号",
+  "realName": "姓名，可留空（登录后会自动补全为平台真值）",
+  "password": "在这里填密码",
+  "_说明": [
+    "把本文件复制为 config/credentials.json 后填写即可。",
+    "也可以不手填，改用下面任一方式：",
+    "  1) node zhs.mjs import --prompt                     交互录入（密码不回显）",
+    "  2) node zhs.mjs import <任意来源.json>              导入别人/别的系统导出的文件",
+    "  3) node zhs.mjs login --school X --student-id Y --password Z",
+    "  4) $env:ZHS_SCHOOL='X'; $env:ZHS_STUDENT_ID='Y'; $env:ZHS_PASSWORD='Z'",
+    "字段名可以不叫 school/studentId/password —— 导入时会自动识别别名：",
+    "  学校 ← school / schoolName / university / college / 学校 / 院校 / 学校名称",
+    "  学号 ← studentId / studentNo / sid / unid / userName / account / 学号 / 账号 / 用户名",
+    "  姓名 ← realName / name / displayName / nickName / 姓名",
+    "  密码 ← password / passwd / pwd / secret / 密码",
+    "注意：config/ 已被 .gitignore 忽略，不会误提交。"
+  ]
+}

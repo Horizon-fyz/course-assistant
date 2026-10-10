@@ -274,7 +274,7 @@ function cmdLogin() {
   return code;
 }
 
-function cmdImport() {
+async function cmdImport() {
   head('导入个人信息');
   const prompt = has('prompt');
   const src = typeof flag('from') === 'string' ? flag('from')
@@ -289,33 +289,18 @@ function cmdImport() {
   }
 
   if (prompt) {
-    say('交互录入（密码不会回显）');
-    const ask = (q) => {
-      process.stdout.write('  ' + q);
-      const ps = `
-$ErrorActionPreference='Stop'
-$secure = Read-Host -AsSecureString
-$b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)
-`;
-      const rr = spawnSync('powershell.exe', ['-NoProfile', '-Command', ps], { encoding: 'utf8' });
-      return (rr.stdout || '').trim();
-    };
-    const askPlain = (q) => {
-      process.stdout.write('  ' + q);
-      // 用 Read-Host 单行读取，避免 node 的 TTY 兼容问题
-      const rr = spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Read-Host'], { encoding: 'utf8' });
-      return (rr.stdout || '').trim();
-    };
+    say('交互录入（密码不回显；姓名可留空）');
     const acc = {};
-    acc.school = fields.school ?? askPlain('学校名（例如 示例大学）: ');
-    acc.studentId = fields.studentId ?? askPlain('学号: ');
-    acc.realName = fields.realName ?? askPlain('姓名（可留空）: ');
-    acc.password = fields.password ?? ask('密码: ');
-    if (!acc.school || !acc.studentId || !acc.password) { bad('三项必填（学校/学号/密码）'); return 1; }
+    acc.school = fields.school ?? await askLine('  学校名（例如 示例大学）: ');
+    acc.studentId = fields.studentId ?? await askLine('  学号: ');
+    acc.realName = fields.realName ?? await askLine('  姓名（可留空）: ');
+    acc.password = fields.password ?? await askSecret('  密码: ');
+    if (!acc.realName) delete acc.realName;
+    if (!acc.school || !acc.studentId || !acc.password) { bad('三项必填（学校 / 学号 / 密码），已取消'); return 1; }
     const r = ACC.saveAccount(acc, { file: out });
     ok(`已写入 ${r.file}${r.secured ? '（权限已收紧）' : ''}`);
     say('  字段: ' + r.saved.join(', '));
+    if (out === ACC.STORE) say('  之后直接跑：node zhs.mjs login');
     return 0;
   }
 
@@ -506,5 +491,7 @@ if (!fn) {
   say('可用：' + Object.keys(COMMANDS).filter((k) => !k.startsWith('-')).join(' | '));
   process.exit(1);
 }
-process.exit(fn() ?? 0);
+// 命令可以是同步或异步（import --prompt 需要 await）
+const result = await fn();
+process.exit(typeof result === 'number' ? result : 0);
 

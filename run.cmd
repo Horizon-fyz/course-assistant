@@ -6,6 +6,8 @@ rem  Double-click          -> environment check + status
 rem
 rem  Command line:
 rem    run.cmd all          full flow: fetch + documents + verify
+rem    run.cmd import       import personal info (--prompt for interactive)
+rem    run.cmd whoami       show effective credentials and platform identity
 rem    run.cmd login        log in and persist the session
 rem    run.cmd fetch        fetch only
 rem    run.cmd docs         regenerate documents only

@@ -5,8 +5,9 @@
 | 文档 | 面向 | 内容 |
 |---|---|---|
 | [`API-cli.md`](API-cli.md) | 命令行 / 脚本 / 定时任务 / 另一个 AI | 每个命令的参数、返回值、退出码、副作用、失败处理对照表 |
-| [`API-node.md`](API-node.md) | 在 JS 里复用 | `src/browser.mjs`、`src/login-flow.mjs`、`src/session.mjs` 的完整函数签名与返回结构 |
+| [`API-node.md`](API-node.md) | 在 JS 里复用 | `src/browser.mjs`、`src/login-flow.mjs`、`src/accounts.mjs` 等的完整函数签名与返回结构 |
 | [`DATA-CONTRACT.md`](DATA-CONTRACT.md) | 读产物文件的下游程序 | `papers.json` / `courses-resolved.json` 的字段定义、取值、陷阱 |
+| [`CREDENTIALS.md`](CREDENTIALS.md) | 需要配置账号的人/程序 | 个人信息的五种输入方式、优先级、字段别名、安全约定 |
 
 机器可读入口：
 
@@ -20,7 +21,10 @@
 
 ```powershell
 node zhs.mjs doctor      # 环境是否就绪（退出码 0 = 就绪）
+node zhs.mjs import --prompt   # 录入个人信息（也可用 --school/--student-id/--password 或导入 JSON）
+node zhs.mjs login       # 登录（会固化会话，浏览器重启不丢）
 node zhs.mjs all         # 抓题 + 生成文档 + 校验（退出码 0 = 全部成功）
+node zhs.mjs whoami      # 查看当前身份与凭据来源
 ```
 
 下游程序只读产物的话，读这两个文件即可：

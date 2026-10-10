@@ -9,6 +9,8 @@
 |---|---|---|
 | `src/browser.mjs` | `HOME` `findChromium` `cdpAlive` `findLiveCdp` `ensureChromium` `connect` `findPage` `readyPage` `tidy` `focusWindow` `waitContent` | 浏览器抽象层（Edge CDP / Firefox 持久化 profile） |
 | `src/login-flow.mjs` | `LOGIN_URL` `API_USERINFO` `loadAccount` `checkLogin` `captchaVisible` `fillLoginForm` `ensureLoggedIn` | 登录公共逻辑（学校下拉框等易错点集中在此） |
+| `src/accounts.mjs` | `STORE` `LEGACY` `FIELD_ALIASES` `normalizeAccount` `resolveAccount` `saveAccount` `importAccount` `exportAccount` `harden` `mask` `fieldHelp` | 凭据解析：多来源、字段别名归一、导入导出、权限收紧 |
+| `src/prompt.mjs` | `askLine` `askSecret` | 交互式读取输入（TTY 隐藏回显；管道可用） |
 | `src/session.mjs` | `ensureSession` | 一次性会话体检：校验登录态 + 存 Cookie/storageState |
 | `src/python.mjs` | `PY` | 探测到的 python 解释器路径 |
 
@@ -193,6 +195,104 @@ const { acc } = loadAccount();
 const st = await ensureLoggedIn(page, acc);
 if (st.code !== 200) process.exit(2);
 await close();
+```
+
+---
+
+## `src/accounts.mjs`
+
+凭据解析的核心。**这是"个人信息可自定义输入"的实现所在**，详见 [`CREDENTIALS.md`](CREDENTIALS.md)。
+
+### 常量
+
+```js
+export const STORE;        // config/credentials.json —— 凭据库默认落点
+export const LEGACY;       // [config/account-live.json, config/account.json]
+export const FIELD_ALIASES; // { school: [...别名], studentId: [...], realName: [...], password: [...] }
+```
+
+### `resolveAccount({ argv, env, explicitFile })`
+
+按优先级解析凭据：**命令行 → 环境变量 → `--account` 指定文件 → 凭据库 → 旧文件**。逐字段决定，可混用。
+
+| 参数 | 类型 | 默认 |
+|---|---|---|
+| `argv` | string[] | `process.argv.slice(2)` |
+| `env` | object | `process.env` |
+| `explicitFile` | string \| null | `null` |
+
+- **返回**：
+
+| 字段 | 说明 |
+|---|---|
+| `acc` | 归一后的 `{ school, studentId, realName?, password }` |
+| `source` | 每个字段的来源：`'cli'` / `'env'` / `'credentials.json'` / `'account-live.json'` … |
+| `complete` | 三个必填字段是否齐全 |
+| `missing` | 缺失的必填字段名 |
+| `read` | 成功读到的候选文件（含 `mapped` / `unknown`） |
+| `candidates` | 全部候选（含读取失败的，便于报错） |
+| `problems` | 读取失败的原因 |
+
+### `normalizeAccount(raw)`
+
+把任意对象归一成标准字段，靠 `FIELD_ALIASES` 做别名匹配。
+
+- **返回**：`{ acc, mapped, unknown }` —— `mapped` 是"原字段名 → 标准字段"的映射（用于告诉用户识别到了什么），`unknown` 是忽略掉的字段。
+
+### `saveAccount(acc, { file, merge })`
+
+写入凭据文件，并尝试把权限收紧到仅当前用户。
+
+- **返回**：`{ file, saved, secured }`（`secured` 表示权限是否收紧成功）
+
+### `importAccount(fromFile, { file, fields })`
+
+导入：读文件（自动去 BOM）→ 归一 → 写入。
+
+- **返回**：`{ ok, error?, mapped, unknown, acc, file, saved, secured }`；`ok:false` 时给出可读原因
+
+### `exportAccount(acc, outFile)` / `harden(path)` / `mask(s)` / `fieldHelp()`
+
+导出到指定文件 / 收紧权限 / 掩码显示（`L*********`）/ 打印别名速查表。
+
+```js
+import { resolveAccount, mask } from './src/accounts.mjs';
+
+const r = resolveAccount({ argv: process.argv.slice(2) });
+if (!r.complete) {
+  console.error('缺字段:', r.missing.join(', '));
+  process.exit(1);
+}
+console.log(r.acc.school, r.acc.studentId, mask(r.acc.password), '来源:', r.source);
+```
+
+---
+
+## `src/prompt.mjs`
+
+交互式读取输入。写它是因为 PowerShell 的 `Read-Host` **读不了管道输入**，脚本化场景会卡死。
+
+### `askLine(question)`
+
+读一行文本。
+
+- **返回**：`Promise<string>`（已 trim）
+- TTY 与管道（无 TTY）都可用
+
+### `askSecret(question)`
+
+读密码。TTY 下进入 raw mode 且**只回显 `*`**；非 TTY 下退化为按行读取。
+
+- **返回**：`Promise<string>`
+- `Ctrl+C` 会以退出码 130 结束
+
+> **实现注意（踩过的坑）**：两个函数共用同一个内部 readline 读取器和行队列。**不要每个问题都 new 一个 readline 接口** —— 每次 `close()` 都会把 stdin 置为 paused，下一个接口就再也收不到数据，表现为"只有第一个提示能输入，之后卡死"并触发 `Detected unsettled top-level await`。
+
+```js
+import { askLine, askSecret } from './src/prompt.mjs';
+
+const school = await askLine('学校: ');
+const password = await askSecret('密码: ');
 ```
 
 ---

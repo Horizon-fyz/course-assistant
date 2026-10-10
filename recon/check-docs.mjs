@@ -56,6 +56,24 @@ const exportChecks = [
   ['src/session.mjs', ['ensureSession']],
   ['src/python.mjs', ['PY']],
 ];
+
+// 允许在「其他模块」章节里集中记录、不必逐个展开的导出
+const NODE_DOC_OPTIONAL = new Set(['askLine', 'askSecret', 'STORE', 'LEGACY', 'FIELD_ALIASES']);
+for (const [file, names] of [
+  ['src/accounts.mjs', ['resolveAccount', 'normalizeAccount', 'saveAccount', 'importAccount', 'exportAccount', 'mask', 'fieldHelp', 'harden', 'STORE', 'LEGACY', 'FIELD_ALIASES']],
+  ['src/prompt.mjs', ['askLine', 'askSecret']],
+]) {
+  if (!existsSync(join(ROOT, file))) { problems.push(`模块不存在：${file}`); continue; }
+  const src = read(file);
+  for (const n of names) {
+    const re = new RegExp(`export\\s+(async\\s+)?(function|const|class)\\s+${n}\\b`);
+    if (!re.test(src)) problems.push(`${file} 未导出 ${n}，但 check-docs 期望它存在`);
+  }
+  if (!nodeDoc.includes(file) && !dataDoc.includes(file)) {
+    notes.push(`模块 ${file} 未被 API-node.md / DATA-CONTRACT.md 提及`);
+  }
+}
+
 for (const [file, names] of exportChecks) {
   if (!existsSync(join(ROOT, file))) { problems.push(`模块不存在：${file}`); continue; }
   const src = read(file);

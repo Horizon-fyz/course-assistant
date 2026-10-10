@@ -47,6 +47,26 @@ node recon\check-docs.mjs       # 检查 tools.json / 文档 与 zhs.mjs 是否�
 node recon\validate-data.mjs    # 用 Schema + 业务规则校验产物
 ```
 
+## 个人信息（凭据）配置
+
+不再依赖写死的文件。五种输入方式，优先级从高到低，**逐字段生效可混用**：
+
+1. 命令行：`login --school X --student-id Y --password Z`
+2. 环境变量：`ZHS_SCHOOL` / `ZHS_STUDENT_ID` / `ZHS_PASSWORD` / `ZHS_REAL_NAME`
+3. `--account <文件>`：任意 JSON，**字段名自动识别别名**（`学校名称`/`university`/`userName`/`pwd` … 都认）
+4. 凭据库：`config/credentials.json`（`import --prompt` 交互录入写在这里）
+5. 兼容旧文件：`config/account-live.json`、`config/account.json`
+
+```powershell
+node zhs.mjs import --prompt      # 交互录入（密码不回显，只显示 *）
+node zhs.mjs import D:\x.json     # 导入任意来源
+node zhs.mjs whoami               # 看当前生效值 + 来源，并把平台真实姓名写回
+```
+
+安全：`config/*` 已被 `.gitignore` 忽略（只放行 `account.template.json`）；写凭据时用 `icacls` 收紧到仅当前用户；`whoami` 与日志只显示掩码。完整说明见 `docs/CREDENTIALS.md`。
+
+文档封面的名字来自**平台真值**：`whoami` 调 `getLoginUserInfo` 取回真实姓名；登录时脚本还会回读学校下拉框的实际选中文本，防止选到「示例大学医学院」之类同名前缀项。
+
 ## 怎么再跑一次
 
 统一入口是 `zhs.mjs`（详见 `README.md`）：
@@ -96,8 +116,8 @@ node recon\login-and-persist.mjs --restart-check
      它会把本机 Firefox 的 cookie 读出来给自动化用（当前该 profile 里还没有智慧树 cookie）。
 
 2. **`config\account.json` 读不了**
-   上次会话把它的权限收紧成"仅 Administrator 全控制"，而当前用户是 FYZ，所以
-   `Get-Content` / 删除 / takeown 全部被拒（FYZ 非管理员）。脚本因此改用
+   上次会话把它的权限收紧成"仅 Administrator 全控制"，而当前用户是 USER，所以
+   `Get-Content` / 删除 / takeown 全部被拒（USER 非管理员）。脚本因此改用
    `config\account-live.json`。要恢复原文件请用管理员权限：
    `icacls "K:\网页自动学习\config\account.json" /reset`
 
