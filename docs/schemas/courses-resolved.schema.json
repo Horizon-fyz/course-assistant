@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://local.zhs/schemas/courses-resolved.schema.json",
+  "title": "courses-resolved.json —— 考试入口解析缓存",
+  "description": "按课程名缓存「考试页入口参数」，避免每次抓取都重新进课程页解析。生成物：export/courses-resolved.json。删除该文件是安全的，下次抓取会自动重建。",
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "required": ["courseId", "recruitId"],
+    "properties": {
+      "secret": {
+        "type": ["string", "null"],
+        "description": "课程加密标识（recruitAndCourseId），从视频页 URL 解出"
+      },
+      "listRid": {
+        "type": ["string", "null"],
+        "description": "考试页 listRid（已 URL 编码，含 %3D%3D 后缀），用于拼 onlineexamh5new 页面地址"
+      },
+      "courseId": { "type": "number" },
+      "recruitId": { "type": "number" },
+      "updatedAt": {
+        "type": "string",
+        "description": "写入时间（ISO 8601）"
+      }
+    }
+  }
+}

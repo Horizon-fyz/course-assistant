@@ -1,0 +1,40 @@
+# ── 依赖与运行时 ─────────────────────────────
+node_modules/
+ms-playwright/
+
+# ── 浏览器用户数据（含 Cookies / 登录数据）──
+browser-profile/
+browser-profile-cdp/
+browser-profile-edge/
+browser-profile-firefox/
+
+# ── 会话 / 登录态 / Cookie / 凭据（禁止提交）──
+session/
+config/
+_temp/
+.session-archive/
+.acl-recovery/
+.acl-reports/
+*.zip
+dsh-session-*
+
+# ── 采集与导出产物（含个人数据 / 截图，仅保留脚本）──
+recon/*/
+recon/*.json
+recon/*.txt
+recon/*.log
+export/*/
+export/*.json
+export/*.md
+export/*.html
+export/*.docx
+export/*.pdf
+export/*.xlsx
+export/*.png
+export/*.log
+
+# ── 日志与临时文件 ───────────────────────────
+*.log
+*.local
+.env
+.env.*

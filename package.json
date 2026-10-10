@@ -1,0 +1,25 @@
+{
+  "name": "zhs-automation",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "智慧树在线学堂 批量操作自动化工作区",
+  "main": "zhs.mjs",
+  "scripts": {
+    "doctor": "node zhs.mjs doctor",
+    "status": "node zhs.mjs status",
+    "login": "node zhs.mjs login",
+    "fetch": "node zhs.mjs fetch",
+    "docs": "node zhs.mjs docs",
+    "verify": "node zhs.mjs verify",
+    "all": "node zhs.mjs all",
+    "validate": "node recon/validate-data.mjs",
+    "check-docs": "node recon/check-docs.mjs",
+    "md": "node recon/make-md.mjs",
+    "pdf": "node recon/make-pdf.mjs",
+    "check-md": "node recon/verify-md.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.64.0"
+  }
+}

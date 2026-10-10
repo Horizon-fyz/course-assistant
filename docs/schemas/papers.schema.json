@@ -1,0 +1,144 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://local.zhs/schemas/papers.schema.json",
+  "title": "papers.json —— 智慧树题库抓取结果",
+  "description": "按「课程名 → 作业数组」组织的抓取结果。每个作业对象是平台作业列表项的原始字段，外加 paper 字段保存试卷接口的完整响应。生成物：export/papers.json",
+  "type": "object",
+  "minProperties": 1,
+  "additionalProperties": {
+    "type": "array",
+    "description": "某一门课程下的全部作业",
+    "items": { "$ref": "#/definitions/HomeworkItem" }
+  },
+  "definitions": {
+    "HomeworkItem": {
+      "type": "object",
+      "description": "一份作业（作业列表接口 getStudentHomework 的一项）+ 抓到的试卷",
+      "required": ["id", "examId", "courseId", "examName"],
+      "properties": {
+        "id": { "type": "string", "description": "作业 ID，用于拼 dohomework URL" },
+        "examId": { "type": "string", "description": "考试 ID，用于拼 dohomework URL" },
+        "courseId": { "type": "number", "description": "课程 ID" },
+        "courseName": { "type": "string" },
+        "examName": { "type": "string", "description": "作业名，例如「第一章单元测试」" },
+        "examUserName": { "type": "string", "description": "出题教师" },
+        "cpOrderNumber": { "type": "string", "description": "对应章节，例如「第一章」" },
+        "chapterId": { "type": "number" },
+        "chapterRank": { "type": "number" },
+        "problemNum": { "type": "number", "description": "题目数" },
+        "totalScore": { "type": "string", "description": "总分（字符串形式，平台原样返回）" },
+        "oneHundredPont": { "type": "string" },
+        "startTime": { "type": "string", "description": "开始时间 YYYY-MM-DD HH:mm:ss" },
+        "endDate": { "type": "string", "description": "截止时间 YYYY-MM-DD HH:mm:ss" },
+        "workCorrectEndTime": { "type": ["string", "null"] },
+        "createTime": { "type": "string" },
+        "meetCourseType": { "type": "number", "description": "用于拼 dohomework URL 的末段" },
+        "score": { "type": ["number", "null"], "description": "得分；未作答为 null" },
+        "achieve": { "type": "number" },
+        "achieveCount": { "type": ["number", "null"] },
+        "state": { "type": "number", "description": "1 = 未提交（抓取前后均会复查）" },
+        "backNum": { "type": "number", "description": "剩余作答次数；未作答为 3" },
+        "backStatus": { "type": "number" },
+        "isMarking": { "type": "number" },
+        "isRecruit": { "type": "number" },
+        "isCheckAnswer": { "type": "number" },
+        "isObject": { "type": "number" },
+        "reviewType": { "type": "number" },
+        "courseState": { "type": "number" },
+        "applyResult": { "type": ["string", "null"] },
+        "paper": {
+          "description": "试卷接口 student/doHomework 的完整响应；未抓到为 null",
+          "oneOf": [{ "$ref": "#/definitions/PaperResponse" }, { "type": "null" }]
+        }
+      }
+    },
+    "PaperResponse": {
+      "type": "object",
+      "properties": {
+        "currentTime": { "type": "number", "description": "服务端时间戳(ms)" },
+        "msg": { "type": "string" },
+        "status": { "type": "string", "description": "响应状态，成功为 \"200\"" },
+        "rt": {
+          "type": "object",
+          "properties": {
+            "id": { "type": ["string", "null"] },
+            "score": { "type": ["number", "null"] },
+            "state": { "type": "number" },
+            "comment": { "type": ["string", "null"] },
+            "examEndTime": { "type": "string" },
+            "examBase": { "$ref": "#/definitions/ExamBase" }
+          }
+        }
+      }
+    },
+    "ExamBase": {
+      "type": "object",
+      "description": "试卷本体",
+      "properties": {
+        "id": { "type": "string", "description": "等于作业的 examId" },
+        "name": { "type": "string" },
+        "courseName": { "type": "string" },
+        "toChapter": { "type": "string" },
+        "chapterId": { "type": "number" },
+        "problemNum": { "type": "number" },
+        "totalScore": { "type": "string" },
+        "pontType": { "type": "string", "description": "计分方式，例如「百分制」" },
+        "explain": { "type": ["string", "null"] },
+        "limitTime": { "type": ["number", "null"] },
+        "workExamParts": {
+          "type": "array",
+          "description": "分卷；通常只有一个元素",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": ["string", "null"] },
+              "startSort": { "type": "number" },
+              "questionCount": { "type": "number" },
+              "questionDtos": { "type": "array", "items": { "$ref": "#/definitions/Question" } }
+            }
+          }
+        }
+      }
+    },
+    "Question": {
+      "type": "object",
+      "description": "一道题。注意：平台不下发答案字段，id 常为 null。",
+      "required": ["name", "questionType", "questionOptions"],
+      "properties": {
+        "name": { "type": "string", "description": "题干，可能含 <p> 等 HTML 标签" },
+        "questionType": {
+          "type": "object",
+          "required": ["id", "name"],
+          "properties": {
+            "id": { "type": "number", "description": "1=单选题 2=多选题 3=判断题（实测取值）" },
+            "name": { "type": "string", "enum": ["单选题", "多选题", "判断题"] }
+          }
+        },
+        "questionOptions": {
+          "type": "array",
+          "description": "选项。顺序为平台返回顺序，选择题每次拉取都可能不同。判断题固定两项（对/错）。",
+          "items": {
+            "type": "object",
+            "required": ["id", "content"],
+            "properties": {
+              "id": { "type": "number", "description": "选项 ID" },
+              "content": { "type": "string", "description": "选项文本" }
+            }
+          }
+        },
+        "questionScore": { "type": "string", "description": "分值（字符串）" },
+        "eid": { "type": "string", "description": "加密题目标识" },
+        "source": { "type": "string" },
+        "isFrame": { "type": "number" },
+        "id": { "type": ["string", "number", "null"], "description": "平台常返回 null" },
+        "parentId": { "type": ["string", "number", "null"] },
+        "listenId": { "type": ["string", "number", "null"] },
+        "listenData": { "type": ["object", "array", "null"] },
+        "questionDatas": { "type": ["object", "array", "null"] },
+        "questionChildrens": { "type": ["array", "null"], "description": "子题（组合题使用）" },
+        "comments": { "type": ["string", "null"] },
+        "result": { "type": ["object", "null"] }
+      }
+    }
+  }
+}

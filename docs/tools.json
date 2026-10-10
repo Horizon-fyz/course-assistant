@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "zhs-题库工具",
+  "version": "0.2.0",
+  "description": "智慧树在线学堂题库工具。可随时调用的单一入口：抓取题目 → 校验 → 生成 Markdown / Word / PDF / Excel。所有命令都是幂等的，可重复执行。",
+  "entrypoint": {
+    "node": "zhs.mjs",
+    "windows": "run.cmd",
+    "invocation": "node zhs.mjs <command> [--flags]",
+    "windowsInvocation": "run.cmd <command> [--flags]",
+    "workingDirectory": "工作区根目录（zhs.mjs 所在目录），程序会自动切换，无需手动 cd"
+  },
+  "environment": {
+    "required": {
+      "node": ">=20"
+    },
+    "optional": {
+      "ZHS_PYTHON": "指定 python 解释器路径（默认自动探测 DSH 打包运行时）",
+      "PLAYWRIGHT_BROWSERS_PATH": "浏览器运行时目录；不设时自动回退到 <工作区>/ms-playwright"
+    }
+  },
+  "exitCodes": {
+    "0": "成功",
+    "1": "出错（缺文件、环境不满足、生成失败）",
+    "2": "未登录（需要先调用 login）",
+    "3": "校验不通过（数据契约或文档完整性）"
+  },
+  "conventions": {
+    "output": "人类可读文本写在 stdout；进度与诊断写在 stderr；产物全部为文件",
+    "flags": "--name value 形式；无值开关写作 --name",
+    "idempotent": true,
+    "sideEffects": "fetch/login 会启动并操作浏览器；docs/verify/status/doctor 不访问网络（docs 生成 PDF 时用无头浏览器渲染本地 HTML）"
+  },
+  "commands": [
+    {
+      "name": "doctor",
+      "summary": "环境自检：Node、Python 文档库、Playwright、浏览器运行时、凭据、登录资料、题库数据",
+      "params": [],
+      "returns": { "kind": "text", "covers": ["每项检查的通过/失败与修复建议"], "exitCode": "0 全部就绪 / 1 有问题" },
+      "sideEffects": "无（只读检查）"
+    },
+    {
+      "name": "status",
+      "summary": "当前状态：账号、题库规模、每个产物的时间与大小、过期提示",
+      "params": [],
+      "returns": { "kind": "text", "covers": ["工作区", "凭据文件", "课程/作业/题目数", "产物清单"] },
+      "sideEffects": "无（只读）"
+    },
+    {
+      "name": "login",
+      "summary": "登录智慧树并把会话票据改写成持久 Cookie（浏览器重启后仍在线）",
+      "params": [
+        { "name": "--restart-check", "type": "boolean", "required": false, "description": "登录后关闭浏览器再重启，验证会话是否存活" }
+      ],
+      "returns": { "kind": "text", "covers": ["登录结果 realName", "关键票据清单", "重启后是否仍登录"], "exitCode": "0 成功 / 2 未成功 / 3 重启后丢失" },
+      "sideEffects": "启动 Edge 并操作登录页；若出现易盾验证码会停在页面等待人工完成（最多 8 分钟）"
+    },
+    {
+      "name": "fetch",
+      "summary": "抓取题库：会话校验 → 动态发现课程 → 解析考试入口 → 批量抓题 → 安全复查",
+      "params": [
+        { "name": "--course", "type": "string", "required": false, "description": "只处理指定课程名，例如 --course 国家安全教育" },
+        { "name": "--dry-run", "type": "boolean", "required": false, "description": "只发现课程，不抓题（用于确认新课程能否识别）" },
+        { "name": "--browser", "type": "enum", "enum": ["chromium", "firefox"], "default": "chromium", "required": false, "description": "指定浏览器；firefox 在当前沙箱环境不可用，见 limitations" }
+      ],
+      "returns": { "kind": "files", "files": ["export/papers.json", "export/courses-resolved.json"], "exitCode": "0 成功 / 1 有作业状态异常 / 2 未登录" },
+      "sideEffects": "启动/复用 Edge（CDP 9222）并访问智慧树页面；只读试卷，绝不提交作业",
+      "safe": true
+    },
+    {
+      "name": "docs",
+      "summary": "按现有 papers.json 生成全部文档（不抓题）",
+      "params": [
+        { "name": "--formats", "type": "string", "default": "md,md-bare,docx,pdf,xlsx", "required": false, "description": "逗号分隔，可选 md / md-bare / docx / pdf / xlsx" },
+        { "name": "--out", "type": "path", "required": false, "description": "产物输出目录，默认 export/" }
+      ],
+      "returns": { "kind": "files", "files": ["智慧树作业题库_打印版.md", "智慧树作业题库.md", "智慧树作业题库_打印版.docx", "智慧树作业题库_打印版.pdf", "智慧树作业题库_打印预览.html", "智慧树课程数据.xlsx"], "exitCode": "0 成功 / 1 有格式失败" },
+      "sideEffects": "写文件；生成 PDF 时用无头 Edge 渲染本地 HTML（不访问网络）"
+    },
+    {
+      "name": "verify",
+      "summary": "校验产物：数据契约（结构+业务规则）+ 文档完整性（逐题逐选项回查 Markdown）+ 产物清单",
+      "params": [],
+      "returns": { "kind": "text", "covers": ["papers.json 结构校验", "未提交状态复核", "Markdown 题目/选项命中数", "产物清单"], "exitCode": "0 通过 / 3 不通过" },
+      "sideEffects": "无（只读）"
+    },
+    {
+      "name": "all",
+      "summary": "全流程：fetch → docs → verify",
+      "params": [
+        { "name": "--course", "type": "string", "required": false, "description": "透传给 fetch" },
+        { "name": "--formats", "type": "string", "required": false, "description": "透传给 docs" },
+        { "name": "--out", "type": "path", "required": false, "description": "透传给 docs" }
+      ],
+      "returns": { "kind": "files+text", "exitCode": "0 全部成功 / 其余取各阶段最严重值" },
+      "sideEffects": "同 fetch + docs"
+    },
+    {
+      "name": "help",
+      "summary": "打印命令帮助",
+      "params": [],
+      "returns": { "kind": "text" },
+      "sideEffects": "无"
+    }
+  ],
+  "artifacts": {
+    "export/papers.json": {
+      "description": "题库数据：课程名 → 作业数组",
+      "schema": "docs/schemas/papers.schema.json",
+      "readOnly": false,
+      "producedBy": "fetch"
+    },
+    "export/courses-resolved.json": {
+      "description": "每门课的考试入口参数缓存（listRid / secret）",
+      "schema": "docs/schemas/courses-resolved.schema.json",
+      "readOnly": false,
+      "producedBy": "fetch",
+      "deletable": true
+    },
+    "export/智慧树作业题库_打印版.md": { "description": "Markdown 题库（含 A4 打印样式）", "producedBy": "docs" },
+    "export/智慧树作业题库.md": { "description": "纯 Markdown 题库（无样式块）", "producedBy": "docs" },
+    "export/智慧树作业题库_打印版.docx": { "description": "Word 版", "producedBy": "docs" },
+    "export/智慧树作业题库_打印版.pdf": { "description": "A4 PDF（带页码）", "producedBy": "docs" },
+    "export/智慧树作业题库_打印预览.html": { "description": "打印预览页", "producedBy": "docs" },
+    "export/智慧树课程数据.xlsx": { "description": "课程总览 + 章节视频明细 + 数据来源说明", "producedBy": "docs", "requires": "export/raw.json" }
+  },
+  "config": {
+    "config/account-live.json": {
+      "description": "登录凭据（不要提交到仓库）",
+      "fields": {
+        "school": { "type": "string", "required": true, "description": "学校名，必须与登录页下拉框完全一致" },
+        "studentId": { "type": "string", "required": true },
+        "password": { "type": "string", "required": true },
+        "realName": { "type": "string", "required": false, "description": "显示名，用于文档封面" }
+      }
+    }
+  },
+  "limitations": [
+    {
+      "id": "firefox-automation",
+      "summary": "Firefox 自动化不可用：Playwright 的 -juggler-pipe 命名管道在当前作业沙箱中被拒绝创建子进程",
+      "symptom": "浏览器以 0xC0000005 退出，日志出现 SpawnTarget 0x80070005",
+      "workaround": "使用默认的 Edge/Chrome 路径；或用 node src/firefox-session.mjs 读取本机 Firefox 已登录的 Cookie"
+    },
+    {
+      "id": "account-json-locked",
+      "summary": "config/account.json 的权限被收紧为仅 Administrator，当前用户无法读取",
+      "workaround": "使用 config/account-live.json；管理员可执行 icacls \"...\\config\\account.json\" /reset 恢复"
+    },
+    {
+      "id": "captcha",
+      "summary": "登录可能触发网易易盾人机验证",
+      "workaround": "login 会停在验证页等待人工完成，完成后自动继续（最多 8 分钟）"
+    }
+  ]
+}

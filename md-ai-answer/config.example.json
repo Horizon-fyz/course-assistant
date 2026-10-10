@@ -1,0 +1,11 @@
+{
+  "baseUrl": "https://api.deepseek.com/v1",
+  "apiKey": "sk-你的key",
+  "model": "deepseek-chat",
+  "temperature": 0.2,
+  "timeoutMs": 60000,
+  "maxRetries": 3,
+  "concurrency": 3,
+  "batchSize": 5,
+  "systemPrompt": "你是一名严谨的答题助手。仅依据题目本身与常识给出正确答案，不要编造。"
+}

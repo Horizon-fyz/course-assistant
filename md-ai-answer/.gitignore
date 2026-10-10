@@ -1,0 +1,15 @@
+# 依赖
+node_modules/
+
+# 含密钥，禁止提交
+config.json
+config.local.json
+
+# 运行生成的答案文件
+*.answers.md
+*.answered.md
+
+# 日志与临时文件
+*.log
+.DS_Store
+Thumbs.db

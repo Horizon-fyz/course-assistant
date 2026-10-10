@@ -1,0 +1,34 @@
+{
+  "name": "md-ai-answer",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "识别 Markdown 题库并调用 OpenAI 兼容 AI 接口批量生成答案（可作为库被更大程序复用）",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./parser": "./src/parser.mjs",
+    "./ai": "./src/ai.mjs",
+    "./answer": "./src/answer.mjs",
+    "./render": "./src/render.mjs",
+    "./config": "./src/config.mjs",
+    "./server": "./server/index.mjs"
+  },
+  "bin": {
+    "md-ai-answer": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "serve": "node server/index.mjs",
+    "app": "electron electron/main.mjs",
+    "app:nosandbox": "electron --no-sandbox electron/main.mjs",
+    "selftest": "node src/cli.mjs --input examples/sample-bank.md --mock --fill",
+    "example:lib": "node examples/library-usage.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "electron": "^42.3.1"
+  }
+}

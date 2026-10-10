@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- CSP：页面由本机后端同源提供；脚本/样式/接口调用均限同源 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';" />
+  <title>md-ai-answer</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>md-ai-answer</h1>
+    <span class="badge" id="runtime-badge">浏览器</span>
+    <span class="badge" id="backend-badge" hidden>后端未连接</span>
+  </header>
+
+  <main>
+    <!-- 1. 题库来源 -->
+    <section class="card">
+      <h2>1. 题库</h2>
+      <div class="row">
+        <button id="btn-open" class="primary">选择 md 文件…</button>
+        <span id="file-name" class="muted">未选择文件</span>
+        <span class="flex"></span>
+        <button id="btn-parse">解析题目</button>
+      </div>
+      <div id="drop" class="drop">
+        将 .md 文件拖到此处，或直接在下框粘贴题库内容
+      </div>
+      <textarea id="bank-text" rows="6" placeholder="（可选）在此粘贴题库 Markdown…"></textarea>
+      <p class="muted" id="parse-summary">尚未解析。</p>
+    </section>
+
+    <!-- 2. AI 配置 -->
+    <section class="card">
+      <h2>2. AI 接口配置</h2>
+      <div class="grid">
+        <label>接口地址 baseUrl
+          <input id="cfg-baseUrl" placeholder="https://api.deepseek.com/v1" />
+        </label>
+        <label>密钥 apiKey
+          <input id="cfg-apiKey" type="password" placeholder="留空则使用后端已配置的密钥" />
+        </label>
+        <label>模型 model
+          <input id="cfg-model" placeholder="deepseek-chat" />
+        </label>
+        <label>并发 concurrency
+          <input id="cfg-concurrency" type="number" min="1" value="3" />
+        </label>
+        <label>每批题数 batchSize
+          <input id="cfg-batchSize" type="number" min="1" value="5" />
+        </label>
+      </div>
+      <div class="row">
+        <button id="btn-answer" class="primary">开始答题</button>
+        <button id="btn-mock">离线演示（不调 AI）</button>
+        <button id="btn-stop" disabled>停止</button>
+        <span class="flex"></span>
+        <label class="inline"><input type="checkbox" id="save-key" /> 记住密钥</label>
+      </div>
+      <p class="muted">密钥策略：优先使用后端 config.json / 环境变量中的密钥；此处填写则临时覆盖（仅本次请求）。</p>
+      <progress id="progress" max="100" value="0"></progress>
+      <p class="muted" id="status">就绪。</p>
+    </section>
+
+    <!-- 3. 结果 -->
+    <section class="card">
+      <h2>3. 结果</h2>
+      <div class="row">
+        <button id="btn-export-md" disabled>导出答案汇总 .md</button>
+        <button id="btn-export-filled" disabled>导出回填题库 .md</button>
+        <span class="flex"></span>
+        <label class="inline"><input type="checkbox" id="show-reason" checked /> 显示解析</label>
+      </div>
+      <div id="results" class="results">
+        <p class="muted">暂无结果。</p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
