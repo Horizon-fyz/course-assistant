@@ -111,7 +111,8 @@ export async function main(argv = process.argv.slice(2)) {
   const mock = Boolean(args.mock);
   const config = await resolveConfig({ configFile: args.config || 'config.json', args });
   if (!mock) {
-    const missing = validateConfig(config);
+    // 命令行只做「文本答题」，只走思考模型，不该强制要求配置视觉模型
+    const missing = validateConfig(config, { needVision: false });
     if (missing.length) {
       console.error(`配置不完整，缺少：${missing.join('、')}。请编辑 config.json 或使用 --mock。`);
       return 1;

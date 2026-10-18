@@ -26,9 +26,6 @@ dsh-session-*
 
 # ── 文档（要保留；上面的 export/*.md 已忽略导出稿）──
 !README.md
-!HANDOFF.md
-!SITE-REPORT.md
-!DOMAIN-REPORT.md
 !docs/
 !docs/**
 
@@ -37,6 +34,9 @@ recon/*/
 recon/*.json
 recon/*.txt
 recon/*.log
+# 归档脚本是源码，需要纳入版本控制（否则被上面的 recon/*/ 整目录忽略）
+!recon/archive/
+!recon/archive/**
 export/*/
 export/*.json
 export/*.md

@@ -147,7 +147,7 @@ https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList?recruitId=<li
 
 ---
 
-## `config/account-live.json`
+## `config/credentials.json`（兼容 `account-live.json` / `account.json`）
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
@@ -156,7 +156,7 @@ https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList?recruitId=<li
 | `password` | 是 | 密码 |
 | `realName` | 否 | 显示名，出现在文档封面。缺失时封面显示 `school + studentId` |
 
-> 该文件含明文密码，**不要提交到仓库**。
+> 该文件含明文密码，**不要提交到仓库**。`config/credentials.json` 是默认凭据库；旧的 `account-live.json`、`account.json` 仍按顺序兜底读取。字段名可用别名（`university`/`学校`、`userId`/`学号` 等），详见 [`CREDENTIALS.md`](CREDENTIALS.md)。
 
 ---
 
@@ -184,6 +184,38 @@ https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList?recruitId=<li
    统计: {课程:3,作业:27,题目:191,选项:642,未抓到试卷:0,空试卷:0,疑似已提交:0,题型:{单选题:79,多选题:50,判断题:62}}
    结构与业务规则均通过
 ```
+
+---
+
+## `export/patrol-report.json` / `export/patrol-state.json`（巡检）
+
+`patrol` 产生的两个文件，没有 Schema，但结构稳定：
+
+| 文件 | 内容 |
+|---|---|
+| `export/patrol-report.json` | 本次巡检结果：`at`、统计（总作业 / 未提交 / 新作业 / 状态变化 / 临近截止）、`items`（逐作业的课程、作业名、状态、分数、截止时间、剩余小时、标记） |
+| `export/patrol-state.json` | 历史快照 `{ items: { "<课程>|<作业id>|<examId>": { state, score, backNum, endDate, firstSeen, lastSeen, deadlineNotifiedOn } } }`，用于识别新作业、状态变化与截止提醒去重 |
+
+`patrol` 会顺带把平台最新状态同步回 `papers.json` 的对应字段（`state` / `score` / `endDate` 等），但不会删除本地已有条目，也不会写入试卷内容。删除 `patrol-state.json` 后，下次巡检会重建基线（不会把存量作业误报为新作业）。
+
+---
+
+## `export/deadline-board.html`（截止看板）
+
+`deadline` 生成的单文件 HTML，`patrol`（非 `--dry`）结束后也会自动刷新。无 Schema，但渲染逻辑只依赖以下字段：
+
+| 来源 | 用到的字段 |
+|---|---|
+| `export/papers.json` | `courseName`、`id`、`examId`、`state`、`score`、`backNum`、`endDate`、`startTime`、`courseId`、`examName`、`meetCourseType` |
+| `export/courses-resolved.json` | `recruitId`（拼「去作答」链接；缺失时链接为空） |
+| `export/patrol-report.json` | `at`、`user`（显示最近巡检时间与账号） |
+| 文件系统 | `papers.json` 的修改时间（显示数据更新时间） |
+
+- **只读渲染**：不修改 `papers.json`，不启动浏览器，不访问网络。
+- **分组规则**：未提交（`Number(state) === 1 && score == null`）按截止时间分为 `overdue` / `today`（<24h）/ `d3`（<72h）/ `d7`（<168h）/ `later` / `none`（无截止）；已提交单独归入 `done`。
+- **去重**：按 `<课程>|<作业id>|<examId>` 去重，避免历史合并产生重复卡片。
+- **位置**：默认 `export/deadline-board.html`，可用 `--out <目录>` 重定向（文件名固定）。
+- **不含试卷正文**：页面只展示作业元信息与链接，不包含题目、选项或答案。
 
 ---
 

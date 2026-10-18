@@ -1,0 +1,14 @@
+{
+  "school": "",
+  "studentId": "",
+  "password": "",
+  "visionBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "visionApiKey": "",
+  "visionModel": "qwen3-vl-plus",
+  "reasonBaseUrl": "https://api.deepseek.com/v1",
+  "reasonApiKey": "",
+  "reasonModel": "deepseek-reasoner",
+  "temperature": 0.1,
+  "concurrency": 3,
+  "batchSize": 5
+}

@@ -128,19 +128,26 @@ export function normalizeAnswerItem(item) {
  */
 function matchAnswersToBatch(batch, parsed) {
   const arr = Array.isArray(parsed) ? parsed : parsed?.answers || parsed?.data || [parsed];
-  // 支持按 number / id 匹配
+  // id 与 number 分开存：原卷题号可能重复，混进同一个 Map 会互相覆盖
+  const byId = new Map();
   const byNumber = new Map();
   for (const it of arr) {
-    if (it && typeof it === 'object') {
-      if (it.number != null) byNumber.set(String(it.number).trim(), it);
-      if (it.id != null) byNumber.set(String(it.id).trim(), it);
-    }
+    if (!it || typeof it !== 'object') continue;
+    if (it.id != null) byId.set(String(it.id).trim(), it);
+    if (it.number != null) byNumber.set(String(it.number).trim(), it);
   }
 
   const out = new Map();
   batch.forEach((q, idx) => {
-    // 优先用全局唯一的 id 匹配（原卷题号可能重复），再退回题号/顺序
-    const item = byNumber.get(String(q.id)) ?? byNumber.get(String(q.number)) ?? arr[idx];
+    // 优先用全局唯一的 id 匹配（原卷题号可能重复），再退回题号
+    let item = byId.get(String(q.id)) ?? byNumber.get(String(q.number)) ?? null;
+    // 顺序兜底只在「模型完全没给标号」且条数一致时启用；
+    // 否则模型少给/多给一条就会把答案整体错位贴到别的题上
+    if (item == null && arr.length === batch.length) {
+      const cand = arr[idx];
+      if (typeof cand === 'string') item = cand;
+      else if (cand && typeof cand === 'object' && cand.id == null && cand.number == null) item = cand;
+    }
     out.set(q.id, normalizeAnswerItem(item));
   });
   return out;
@@ -206,10 +213,21 @@ export async function answerQuestions({
 } = {}) {
   if (!Array.isArray(questions) || questions.length === 0) return new Map();
 
+  // 统一补齐 id 与 options：/api/answer 允许调用方直接传 {stem,type,options}，
+  // 缺 id 时所有答案会挤到同一个 Map 键（undefined）上而互相覆盖。
+  const list = questions.map((q, i) => {
+    const item = q && typeof q === 'object' ? q : { stem: String(q ?? '') };
+    return {
+      ...item,
+      id: item.id ?? i + 1,
+      options: Array.isArray(item.options) ? item.options : [],
+    };
+  });
+
   // 优先使用注入的 client；否则用「思考模型」配置现造一个
   const aiClient = mock ? null : client || createClient(pickReason(config));
 
-  const batches = chunk(questions, config?.batchSize || 5);
+  const batches = chunk(list, config?.batchSize || 5);
   const answers = new Map();
   let done = 0;
 
@@ -220,7 +238,7 @@ export async function answerQuestions({
       for (const q of batch) answers.set(q.id, mockAnswer(q));
     } else {
       try {
-        const content = await aiClient.chat(buildMessages(batch, config, questions.length), { signal });
+        const content = await aiClient.chat(buildMessages(batch, config, list.length), { signal });
         const batchAnswers = matchAnswersToBatch(batch, extractJson(content));
         for (const [id, a] of batchAnswers) answers.set(id, a);
       } catch (e) {
@@ -232,14 +250,14 @@ export async function answerQuestions({
 
     done += batch.length;
     hooks.onBatch?.(batch, answers);
-    hooks.onProgress?.(done, questions.length);
+    hooks.onProgress?.(done, list.length);
   });
 
   // —— 多选题复核 ——
   // 多选题只给出一个字母时追问一次：这类题通常不止一个正确项，模型偶尔会漏。
   // 复核结果更完整就替换，否则保留原答案；复核本身失败不影响原答案。
   if (!mock) {
-    const suspicious = questions.filter((q) => {
+    const suspicious = list.filter((q) => {
       if (q.type !== 'multiple') return false;
       const a = answers.get(q.id);
       return a && /^[A-Za-z]$/.test(String(a.answer || '').trim());
@@ -253,7 +271,17 @@ export async function answerQuestions({
           const parsed = extractJson(content);
           const one = Array.isArray(parsed) ? parsed[0] : (parsed?.answers?.[0] ?? parsed);
           const norm = normalizeAnswerItem(one);
-          const letters = String(norm.answer || '').toUpperCase().replace(/[^A-Z]/g, '');
+          // 只认「答案开头连续的选项字母」，不能把理由里的英文单词/字母也算进答案
+          const m = String(norm.answer || '').match(/^\s*([A-Za-z](?:\s*[,，、/&+和]?\s*[A-Za-z])*)/);
+          let letters = (m ? m[1] : '').toUpperCase().replace(/[^A-Z]/g, '');
+          // 再用题目自身的选项 key 过滤，彻底排除解释文字里的字母
+          const validKeys = new Set(
+            (Array.isArray(q.options) ? q.options : [])
+              .map((o) => String(o?.key || '').toUpperCase())
+              .filter(Boolean),
+          );
+          if (validKeys.size) letters = [...letters].filter((ch) => validKeys.has(ch)).join('');
+          letters = [...new Set(letters.split(''))].sort().join('');
           if (letters.length > 1) {
             const prev = answers.get(q.id) || {};
             answers.set(q.id, {

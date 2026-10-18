@@ -17,10 +17,18 @@ def _arg(name, default=None):
 
 SRC = _arg("--src", os.path.join(BASE, "export", "raw.json"))
 OUT = _arg("--out", os.path.join(BASE, "export", "智慧树课程数据.xlsx"))
-ACCOUNT = _arg("--account", "示例用户")
-SCHOOL = _arg("--school", "示例大学")
+ACCOUNT = _arg("--account", "")
+SCHOOL = _arg("--school", "")
 
-raw = json.load(open(SRC, encoding="utf-8"))
+with open(SRC, encoding="utf-8") as f:
+    raw = json.load(f)
+if not isinstance(raw, dict):
+    raise SystemExit("raw.json 结构异常：顶层应为对象")
+
+courses = [c for c in (raw.get("courses") or []) if isinstance(c, dict)]
+videos = raw.get("videos") or {}
+if not isinstance(videos, dict):
+    videos = {}
 
 wb = Workbook()
 
@@ -58,16 +66,20 @@ ws.append(["课程名称", "教师", "开课学校", "学习进度", "当前在�
            "courseId", "recruitId", "章节数", "视频数", "已学视频", "视频总时长(分)"])
 style_header(ws)
 
-for c in raw["courses"]:
-    v = raw["videos"].get(str(c["courseId"])) or {}
+total_chapters = 0
+total_lessons = 0
+for c in courses:
+    v = videos.get(str(c.get("courseId"))) or {}
     chapters = v.get("videoChapterDtos") or []
     lessons = [l for ch in chapters for l in (ch.get("videoLessons") or [])]
+    total_chapters += len(chapters)
+    total_lessons += len(lessons)
     studied = sum(1 for l in lessons if l.get("isStudiedLesson") == 1)
     total_sec = sum(l.get("videoSec") or 0 for l in lessons)
     ws.append([
-        c["courseName"], c["teacherName"], c["schoolName"], c["progress"],
+        c.get("courseName", ""), c.get("teacherName", ""), c.get("schoolName", ""), c.get("progress", ""),
         f'{c.get("lessonNum") or ""} {c.get("lessonName") or ""}'.strip(),
-        c["courseId"], c["recruitId"], len(chapters), len(lessons), studied,
+        c.get("courseId", ""), c.get("recruitId", ""), len(chapters), len(lessons), studied,
         round(total_sec / 60),
     ])
 for r in range(2, ws.max_row + 1):
@@ -82,13 +94,13 @@ ws2.append(["课程名称", "章节序号", "章节名", "课节序号", "课节
             "时长", "时长(秒)", "是否已学", "lessonId", "videoId", "授课教师"])
 style_header(ws2)
 
-for c in raw["courses"]:
-    v = raw["videos"].get(str(c["courseId"])) or {}
+for c in courses:
+    v = videos.get(str(c.get("courseId"))) or {}
     for ch in v.get("videoChapterDtos") or []:
         for l in ch.get("videoLessons") or []:
             sec = l.get("videoSec") or 0
             ws2.append([
-                c["courseName"], ch.get("orderNumber"), ch.get("name"),
+                c.get("courseName", ""), ch.get("orderNumber"), ch.get("name"),
                 l.get("orderNumber"), l.get("name"),
                 f"{sec // 60:02d}:{sec % 60:02d}", sec,
                 "已学" if l.get("isStudiedLesson") == 1 else "未学",
@@ -112,7 +124,7 @@ rows = [
     ("课程列表接口", "POST onlineservice-api.zhihuishu.com/gateway/t/v1/student/course/share/queryShareCourseInfo"),
     ("章节视频接口", "POST studyservice-api.zhihuishu.com/gateway/t/v1/learning/videolist"),
     ("", ""),
-    ("已采集", "课程 3 门、章节 30 个、视频 72 个（含时长与已学标记）"),
+    ("已采集", f"课程 {len(courses)} 门、章节 {total_chapters} 个、视频 {total_lessons} 个（含时长与已学标记）"),
     ("未采集", "单课节观看时长（queryStuyInfo）"),
     ("未采集原因", "该接口要求把 recruitId/courseId 加密进 secretStr，无法与其他接口复用签名，"
                    "服务端返回 code 421「该账号无权限」；需通过浏览器实际操作该页面采集。"),

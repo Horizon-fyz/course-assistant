@@ -24,8 +24,8 @@ const bare = ARGV.includes('--bare');
 
 const SRC = resolve(flag('src', join(ROOT, 'export', 'papers.json')));
 const OUT = resolve(flag('out', join(ROOT, 'export', bare ? '智慧树作业题库.md' : '智慧树作业题库_打印版.md')));
-const STUDENT = flag('student', '示例用户');
-const SCHOOL = flag('school', '示例大学');
+const STUDENT = flag('student', '');
+const SCHOOL = flag('school', '');
 
 if (!existsSync(SRC)) { console.error('缺少 ' + SRC); process.exit(1); }
 mkdirSync(dirname(OUT), { recursive: true });
@@ -33,12 +33,12 @@ const data = JSON.parse(readFileSync(SRC, 'utf8'));
 
 const LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
-/** 清掉题干里的 HTML 标签，保留换行语义 */
+/** 清掉题干里的 HTML 标签；换行折叠为空格，避免破坏 Markdown 单行结构 */
 function clean(text) {
   if (!text) return '';
   return String(text)
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/(p|div|li)>/gi, ' ')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
@@ -46,7 +46,7 @@ function clean(text) {
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/[ \t]+/g, ' ')
-    .replace(/\n{2,}/g, '\n')
+    .replace(/[\r\n]+/g, ' ')
     .trim();
 }
 
@@ -60,7 +60,7 @@ function questionsOf(item) {
   return (base.workExamParts ?? []).flatMap((p) => p.questionDtos ?? []);
 }
 
-const courses = Object.entries(data).filter(([, items]) => items.length);
+const courses = Object.entries(data).filter(([, items]) => Array.isArray(items) && items.length);
 const totalHw = courses.reduce((s, [, items]) => s + items.length, 0);
 const totalQ = courses.reduce((s, [, items]) => s + items.reduce((a, it) => a + questionsOf(it).length, 0), 0);
 const now = new Date();
@@ -105,7 +105,7 @@ L.push(`**共 ${courses.length} 门课程 · ${totalHw} 份作业 · ${totalQ} �
 L.push('');
 L.push(`题型分布：\`${typeLine}\``);
 L.push('');
-L.push(`生成时间：\`${stamp}\`　·　账号：\`${STUDENT}（${SCHOOL}）\``);
+L.push(`生成时间：\`${stamp}\`` + (STUDENT || SCHOOL ? `　·　账号：\`${STUDENT}${SCHOOL ? `（${SCHOOL}）` : ''}\`` : ''));
 L.push('');
 L.push('`本稿由已登录会话读取试卷内容生成，仅供本人复习使用；未作答、未提交任何作业。`');
 L.push('');

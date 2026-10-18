@@ -1,11 +1,12 @@
 # 接口文档索引
 
-三类调用方式，按需要选：
+多种调用方式，按需要选：
 
 | 文档 | 面向 | 内容 |
 |---|---|---|
+| [`API-mcp.md`](API-mcp.md) | AI 客户端（Trae / Claude Desktop / Cursor） | MCP 服务器配置、14 个工具、后台任务轮询、`confirm` 安全约定 |
 | [`API-cli.md`](API-cli.md) | 命令行 / 脚本 / 定时任务 / 另一个 AI | 每个命令的参数、返回值、退出码、副作用、失败处理对照表 |
-| [`API-node.md`](API-node.md) | 在 JS 里复用 | `src/browser.mjs`、`src/login-flow.mjs`、`src/accounts.mjs` 等的完整函数签名与返回结构 |
+| [`API-node.md`](API-node.md) | 在 JS 里复用 | `src/core/browser.mjs`、`src/core/login-flow.mjs`、`src/core/accounts.mjs` 等的完整函数签名与返回结构 |
 | [`DATA-CONTRACT.md`](DATA-CONTRACT.md) | 读产物文件的下游程序 | `papers.json` / `courses-resolved.json` 的字段定义、取值、陷阱 |
 | [`CREDENTIALS.md`](CREDENTIALS.md) | 需要配置账号的人/程序 | 个人信息的五种输入方式、优先级、字段别名、安全约定 |
 
@@ -53,6 +54,6 @@ node recon/validate-data.mjs    # 只看数据契约，输出更细
 ## 相关文档
 
 - [`../README.md`](../README.md) —— 人类使用的完整说明
-- [`../HANDOFF.md`](../HANDOFF.md) —— 当前状态与交接
-- [`../SITE-REPORT.md`](../SITE-REPORT.md) —— 站点侦察：接口清单、签名机制、红线
-- [`../DOMAIN-REPORT.md`](../DOMAIN-REPORT.md) —— 全域巡检：子域名、可达性、能力矩阵
+- [`HANDOFF.md`](HANDOFF.md) —— 当前状态与交接
+- [`SITE-REPORT.md`](SITE-REPORT.md) —— 站点侦察：接口清单、签名机制、红线
+- [`DOMAIN-REPORT.md`](DOMAIN-REPORT.md) —— 全域巡检：子域名、可达性、能力矩阵

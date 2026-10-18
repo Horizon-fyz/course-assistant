@@ -18,14 +18,25 @@
   const stateListeners = [];
   const logListeners = [];
 
+  // 宿主没有回包时不能一直挂着：按消息类型给出不同上限
+  const DEFAULT_TIMEOUT = 30000;
+  const TIMEOUTS = {
+    'vision:once': 120000,   // 内含截屏 + 编码
+    'page:scan': 300000,     // 网页扫描可能包含 AI 作答
+    'page:apply': 300000,    // 回填答案
+    'file:pickBank': 300000, // 等待用户选文件
+    'file:saveText': 120000,
+  };
+
   wv.addEventListener('message', (e) => {
     const m = e.data;
     if (!m || typeof m !== 'object') return;
 
     // 请求应答
     if (m.id != null && pending.has(m.id)) {
-      const { resolve, reject } = pending.get(m.id);
+      const { resolve, reject, timer } = pending.get(m.id);
       pending.delete(m.id);
+      clearTimeout(timer);
       if (m.ok) resolve(m.data);
       else reject(new Error(m.error || '宿主返回错误'));
       return;
@@ -36,12 +47,24 @@
     else if (m.event === 'automation:log') for (const f of logListeners) f(m.data);
   });
 
-  /** 请求/应答：调用宿主并等待结果 */
+  /** 请求/应答：调用宿主并等待结果（超时后抛出，避免界面永远转圈） */
   function call(type, payload) {
     return new Promise((resolve, reject) => {
       const id = seq++;
-      pending.set(id, { resolve, reject });
-      wv.postMessage({ id, type, payload: payload === undefined ? null : payload });
+      const ms = TIMEOUTS[type] || DEFAULT_TIMEOUT;
+      const timer = setTimeout(() => {
+        if (!pending.has(id)) return;
+        pending.delete(id);
+        reject(new Error('宿主响应超时（' + type + '）'));
+      }, ms);
+      pending.set(id, { resolve, reject, timer });
+      try {
+        wv.postMessage({ id, type, payload: payload === undefined ? null : payload });
+      } catch (err) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(err);
+      }
     });
   }
 

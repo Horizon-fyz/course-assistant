@@ -8,7 +8,7 @@ from docx import Document
 from docx.shared import Pt, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml.ns import qn
-import json, os, sys, datetime
+import json, os, re, sys, datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -26,9 +26,23 @@ SRC = _arg("--src", os.path.join(BASE, "export", "papers.json"))
 OUT = _arg("--out", os.path.join(BASE, "export", "智慧树作业题库_打印版.docx"))
 ACCOUNT = _arg("--account", "")
 
-data = json.load(open(SRC, encoding="utf-8"))
+with open(SRC, encoding="utf-8") as f:
+    data = json.load(f)
+if not isinstance(data, dict):
+    raise SystemExit("papers.json 结构异常：顶层应为 {课程: [作业...]}")
 
-LABELS = "ABCDEFGHIJ"
+LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def clean(text):
+    """去掉接口文本里的 HTML 标签，换行折叠为空格"""
+    s = str(text or "")
+    s = re.sub(r"<br\s*/?>", " ", s, flags=re.I)
+    s = re.sub(r"</(p|div|li)>", " ", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = (s.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">")
+          .replace("&quot;", '"').replace("&amp;", "&"))
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def set_cjk(run, name="宋体", size=None, bold=None, color=None):
@@ -79,8 +93,8 @@ def paper_questions(item):
 # 统计
 stat = doc.add_paragraph()
 stat.alignment = WD_ALIGN_PARAGRAPH.CENTER
-total_hw = sum(len(v) for v in data.values())
-total_q = sum(len(paper_questions(x)) for v in data.values() for x in v)
+total_hw = sum(len(v) for v in data.values() if isinstance(v, list))
+total_q = sum(len(paper_questions(x)) for v in data.values() if isinstance(v, list) for x in v)
 set_cjk(stat.add_run(f"共 {len(data)} 门课程 · {total_hw} 份作业 · {total_q} 道题目"), "微软雅黑", 12)
 
 meta = doc.add_paragraph()
@@ -98,11 +112,13 @@ doc.add_paragraph()
 h = doc.add_paragraph()
 set_cjk(h.add_run("目录"), "微软雅黑", 15, True)
 for course, items in data.items():
+    if not isinstance(items, list):
+        continue
     p = doc.add_paragraph()
     set_cjk(p.add_run(f"● {course}（{len(items)} 份作业）"), "微软雅黑", 11, True)
     for it in items:
-        base = (it.get("paper") or {}).get("rt", {}).get("examBase") or {}
-        n = len([q for part in (base.get("workExamParts") or []) for q in (part.get("questionDtos") or [])])
+        base = ((it.get("paper") or {}).get("rt") or {}).get("examBase") or {}
+        n = len(paper_questions(it))
         q = doc.add_paragraph()
         q.paragraph_format.left_indent = Cm(0.8)
         set_cjk(q.add_run(f"  {it.get('examName','(未知)')}　{n} 题　{it.get('totalScore','')} 分　截止 {str(it.get('endDate',''))[:10]}"), "宋体", 10)
@@ -110,13 +126,14 @@ for course, items in data.items():
 doc.add_page_break()
 
 # ---------- 正文 ----------
-for course, items in data.items():
+courses = [(c, v) for c, v in data.items() if isinstance(v, list)]
+for ci, (course, items) in enumerate(courses):
     ch = doc.add_paragraph()
     set_cjk(ch.add_run(course), "微软雅黑", 20, True, (0x1F, 0x3A, 0x93))
     ch.paragraph_format.space_after = Pt(10)
 
     for it in items:
-        base = (it.get("paper") or {}).get("rt", {}).get("examBase") or {}
+        base = ((it.get("paper") or {}).get("rt") or {}).get("examBase") or {}
         parts = base.get("workExamParts") or []
         questions = [q for part in parts for q in (part.get("questionDtos") or [])]
         if not questions:
@@ -145,7 +162,7 @@ for course, items in data.items():
             stem.paragraph_format.space_before = Pt(6)
             stem.paragraph_format.space_after = Pt(2)
             set_cjk(stem.add_run(f"{qi}. 【{qt}】 "), "宋体", 10.5, True)
-            set_cjk(stem.add_run(q.get("name", "")), "宋体", 10.5)
+            set_cjk(stem.add_run(clean(q.get("name", ""))), "宋体", 10.5)
 
             # 选项（保留原始顺序，并明确提示顺序随机）
             for oi, opt in enumerate(q.get("questionOptions") or []):
@@ -154,7 +171,7 @@ for course, items in data.items():
                 op.paragraph_format.space_after = Pt(1)
                 label = LABELS[oi] if oi < len(LABELS) else str(oi + 1)
                 set_cjk(op.add_run(f"{label}. "), "宋体", 10.5, True)
-                set_cjk(op.add_run(opt.get("content", "")), "宋体", 10.5)
+                set_cjk(op.add_run(clean(opt.get("content", ""))), "宋体", 10.5)
 
         note = doc.add_paragraph()
         note.paragraph_format.space_before = Pt(4)
@@ -162,7 +179,8 @@ for course, items in data.items():
 
         doc.add_paragraph()
 
-    doc.add_page_break()
+    if ci < len(courses) - 1:
+        doc.add_page_break()
 
 doc.save(OUT)
 print("saved:", OUT)

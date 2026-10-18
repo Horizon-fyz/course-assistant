@@ -38,7 +38,7 @@ import { parseQuestionBank } from '../src/parser.mjs';
 import { answerQuestions } from '../src/answer.mjs';
 import { recognizeImage, recognizeQuestions, reasonAnswers } from '../src/vision.mjs';
 import { createClient } from '../src/ai.mjs';
-import { loadBank, saveBank, matchBank, upsertBank, bankCount, emptyBank, isCompleteQuestion } from '../src/bank.mjs';
+import { loadBank, saveBank, updateBank, matchBank, upsertBank, bankCount, emptyBank, isCompleteQuestion } from '../src/bank.mjs';
 import { renderAnswerMarkdown, renderFilledMarkdown } from '../src/render.mjs';
 import { resolveConfig, mergeConfig, validateConfig, pickVision, pickReason } from '../src/config.mjs';
 
@@ -105,25 +105,79 @@ function answersToObject(map) {
   return out;
 }
 
+/** Host 头（可带端口）是否指向本机回环地址 */
+function isLoopbackHost(hostHeader) {
+  const h = String(hostHeader || '').trim().toLowerCase();
+  if (!h) return false;
+  const hostname = h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0];
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '[::1]' || h === '::1';
+}
+
 /**
  * 判断跨源请求是否可放行。仅允许「与本机后端同源」（含局域网访问的自身地址）、
  * 本机回环地址，以及将来的浏览器扩展（chrome-extension:// / moz-extension://）。
  * 目的是挡住任意网站借本机后端盗用已配置的 apiKey。
+ *
+ * 注意 Host 头校验：攻击者把自己的域名解析到 127.0.0.1（DNS rebinding）时，
+ * 浏览器发出的 Host 仍是 evil.com，只校验 Origin 会被绕过，因此这里先要求
+ * Host 本身是回环地址（局域网模式除外）。
  * @param {string|undefined} origin
  * @param {import('node:http').IncomingMessage} req
+ * @param {boolean} [allowLan] 是否允许非回环 Host（需显式开启）
  * @returns {boolean}
  */
-function isAllowedOrigin(origin, req) {
+function isAllowedOrigin(origin, req, allowLan = false) {
+  const host = String(req.headers.host || '');
+  const hostIsLoopback = isLoopbackHost(host);
+  if (!hostIsLoopback && !allowLan) return false;
   if (!origin) return true; // 非浏览器客户端（curl / 命令行）不带 Origin
   if (/^(chrome|moz)-extension:\/\//i.test(origin)) return true; // 将来的插件
   try {
     const o = new URL(origin);
-    if ((req.headers.host || '') === o.host) return true; // 与后端同源
-    if (['127.0.0.1', 'localhost', '::1', '[::1]'].includes(o.hostname)) return true;
+    if (host && o.host.toLowerCase() === host.toLowerCase()) return true; // 与后端同源
+    if (hostIsLoopback && ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(o.hostname)) return true;
   } catch {
     /* 非法 Origin */
   }
   return false;
+}
+
+/** 去掉 URL 中的 userinfo（https://user:pass@host/v1 → https://host/v1），避免把凭据下发给前端 */
+function stripUserinfo(value) {
+  if (!value) return value;
+  try {
+    const u = new URL(value);
+    if (!u.username && !u.password) return value;
+    return `${u.origin}${u.pathname === '/' ? '' : u.pathname}${u.search}`;
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * 合并服务端配置与前端请求体的覆盖项。
+ * 安全约束：请求体若换掉 baseUrl 却没带对应的 apiKey，服务端已保存的密钥就会被
+ * 发往请求体指定的地址。这种「只换地址不换密钥」的覆盖一律丢弃。
+ */
+function mergeRequestConfig(serverConfig, bodyConfig) {
+  const base = serverConfig || {};
+  if (!bodyConfig || typeof bodyConfig !== 'object') return mergeConfig(base);
+  const override = { ...bodyConfig };
+  const has = (k) => typeof override[k] === 'string' && override[k].trim() !== '';
+  if (has('visionBaseUrl') && !has('visionApiKey')) delete override.visionBaseUrl;
+  if (has('reasonBaseUrl') && !has('reasonApiKey')) delete override.reasonBaseUrl;
+  // 旧版扁平键同时作用于两个模型，必须自带 apiKey 才允许覆盖地址
+  if (has('baseUrl') && !has('apiKey') && !has('visionApiKey') && !has('reasonApiKey')) delete override.baseUrl;
+  return mergeConfig(base, override);
+}
+
+/** 非回环地址需要显式开启，防止 HOST=0.0.0.0 把后端连同密钥暴露到局域网 */
+function resolveBindHost(host) {
+  const h = host || '127.0.0.1';
+  if (isLoopbackHost(h)) return h;
+  if (process.env.MDAI_ALLOW_LAN === '1') return h;
+  console.warn(`[安全] 拒绝绑定非回环地址 ${h}；如确需局域网访问，请设置 MDAI_ALLOW_LAN=1`);
+  return '127.0.0.1';
 }
 
 /** 可序列化对象 → Map<id,Answer> */
@@ -153,9 +207,9 @@ function handleGetConfig(res, ctx) {
   sendJson(res, 200, {
     ok: true,
     config: {
-      visionBaseUrl: v.baseUrl,
+      visionBaseUrl: stripUserinfo(v.baseUrl),
       visionModel: v.model,
-      reasonBaseUrl: r.baseUrl,
+      reasonBaseUrl: stripUserinfo(r.baseUrl),
       reasonModel: r.model,
       concurrency: c.concurrency,
       batchSize: c.batchSize,
@@ -189,7 +243,7 @@ async function handleAnswer(req, res, ctx, url) {
   }
 
   // 后端配置为底，前端传入的 config 覆盖（含可选的 apiKey）
-  const config = mergeConfig(ctx.serverConfig, body.config);
+  const config = mergeRequestConfig(ctx.serverConfig, body.config);
   const mock = Boolean(body.mock);
 
   if (!mock) {
@@ -203,9 +257,13 @@ async function handleAnswer(req, res, ctx, url) {
   const wantsSSE =
     url.searchParams.get('stream') === '1' || String(req.headers.accept || '').includes('text/event-stream');
 
-  // 客户端断开连接时真正取消后端的 AI 请求（避免后台继续跑、继续计费）
+  // 客户端断开连接时真正取消后端的 AI 请求（避免后台继续跑、继续计费）。
+  // 必须挂在 res 上：req 的 'close' 在请求体读完后就会触发（Node 语义），
+  // 挂 req 会导致 AI 请求刚发出就被取消。
   const ac = new AbortController();
-  req.on('close', () => ac.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
 
   // —— 普通 JSON 模式 ——
   if (!wantsSSE) {
@@ -222,7 +280,7 @@ async function handleAnswer(req, res, ctx, url) {
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
   let closed = false;
-  req.on('close', () => {
+  res.on('close', () => {
     closed = true;
   });
 
@@ -259,50 +317,53 @@ async function handleVision(req, res, ctx) {
     return sendJson(res, 400, { ok: false, error: '缺少截图数据（image 需为 data:image/... 的 base64）' });
   }
 
-  const config = mergeConfig(ctx.serverConfig, body.config);
+  const config = mergeRequestConfig(ctx.serverConfig, body.config);
   const missing = validateConfig(config);
   if (missing.length) {
     return sendJson(res, 400, { ok: false, error: `配置不完整，缺少：${missing.join('、')}` });
   }
 
-  // 客户端断开时取消 AI 请求
+  // 客户端断开时取消 AI 请求（挂 res，原因见 handleAnswer）
   const ac = new AbortController();
-  req.on('close', () => ac.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
 
   const questions = await recognizeImage({ imageDataUrl: image, config, signal: ac.signal });
 
-  const bank = await loadBank(ctx.bankFile);
+  // 题库的「读 → 改 → 写」放在 updateBank 的串行队列里，
+  // 三个接口并发命中时不会互相覆盖（后写覆盖先写会丢更新）
   const out = [];
-  let changed = false;
-
-  for (const q of questions) {
-    const hit = matchBank(bank, q.stem);
-    if (hit) {
-      // 题库命中：直接用题库答案，AI 的答案只作为兜底
-      out.push({
-        ...q,
-        answer: String(hit.entry.answer || '').trim() || q.answer,
-        reason: String(hit.entry.reason || '').trim() || q.reason,
-        source: 'bank',
-      });
-      hit.entry.hits = (hit.entry.hits || 0) + 1;
-      hit.entry.updatedAt = Date.now();
-      changed = true;
-    } else {
-      out.push({ ...q, source: 'ai' });
-      // 只在「AI 给出答案」且识别结果完整时才写回题库，
-      // 避免把残缺识别（题干过短 / 选项不全）固化成脏记录
-      if (q.answer && isCompleteQuestion(q)) {
-        if (upsertBank(bank, q)) changed = true;
+  let count = 0;
+  try {
+    await updateBank(ctx.bankFile, (bank) => {
+      for (const q of questions) {
+        const hit = matchBank(bank, q.stem, q);
+        if (hit) {
+          // 题库命中：直接用题库答案，AI 的答案只作为兜底
+          out.push({
+            ...q,
+            answer: String(hit.entry.answer || '').trim() || q.answer,
+            reason: String(hit.entry.reason || '').trim() || q.reason,
+            source: 'bank',
+          });
+          hit.entry.hits = (hit.entry.hits || 0) + 1;
+          hit.entry.updatedAt = Date.now();
+        } else {
+          out.push({ ...q, source: 'ai' });
+          // 只在「AI 给出答案」且识别结果完整时才写回题库，
+          // 避免把残缺识别（题干过短 / 选项不全）固化成脏记录
+          if (q.answer && isCompleteQuestion(q)) upsertBank(bank, q);
+        }
       }
-    }
+      count = bankCount(bank);
+    });
+  } catch {
+    // 题库写失败不影响本次作答
+    if (!out.length) for (const q of questions) out.push({ ...q, source: 'ai' });
   }
 
-  if (changed) {
-    try { await saveBank(ctx.bankFile, bank); } catch { /* 题库写失败不影响本次作答 */ }
-  }
-
-  sendJson(res, 200, { ok: true, questions: out, bankCount: bankCount(bank) });
+  sendJson(res, 200, { ok: true, questions: out, bankCount: count });
 }
 
 /**
@@ -318,14 +379,16 @@ async function handleVisionExtract(req, res, ctx) {
     return sendJson(res, 400, { ok: false, error: '缺少截图数据（image 需为 data:image/... 的 base64）' });
   }
 
-  const config = mergeConfig(ctx.serverConfig, body.config);
+  const config = mergeRequestConfig(ctx.serverConfig, body.config);
   const missing = validateConfig(config, { needReason: false }); // 提取阶段只需识别模型
   if (missing.length) {
     return sendJson(res, 400, { ok: false, error: `配置不完整，缺少：${missing.join('、')}` });
   }
 
   const ac = new AbortController();
-  req.on('close', () => ac.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
 
   const client = createClient(pickVision(config));
   const questions = await recognizeQuestions({ imageDataUrl: image, client, signal: ac.signal });
@@ -343,23 +406,26 @@ async function handleVisionReason(req, res, ctx) {
   const questions = Array.isArray(body.questions) ? body.questions : null;
   if (!questions) return sendJson(res, 400, { ok: false, error: '缺少 questions（应为提取阶段返回的题目数组）' });
 
-  const config = mergeConfig(ctx.serverConfig, body.config);
+  const config = mergeRequestConfig(ctx.serverConfig, body.config);
   const missing = validateConfig(config, { needVision: false }); // 思考阶段只走思考模型
   if (missing.length) {
     return sendJson(res, 400, { ok: false, error: `配置不完整，缺少：${missing.join('、')}` });
   }
 
   const ac = new AbortController();
-  req.on('close', () => ac.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
 
   const bank = await loadBank(ctx.bankFile);
   const out = new Array(questions.length);
   const pending = []; // 未命中题库、需要 DeepSeek 推理的题目
-  let changed = false;
+  const hits = []; // 命中题库的题目，稍后在事务里累加 hits
+  const aiWrites = []; // AI 推理出的完整题目，稍后在事务里写回题库
 
   // 题库命中优先：命中的直接复用题库答案，不再调用 AI
   questions.forEach((q, i) => {
-    const hit = q && q.stem ? matchBank(bank, q.stem) : null;
+    const hit = q && q.stem ? matchBank(bank, q.stem, q) : null;
     if (hit) {
       out[i] = {
         ...q,
@@ -367,9 +433,7 @@ async function handleVisionReason(req, res, ctx) {
         reason: String(hit.entry.reason || '').trim() || q.reason || '',
         source: 'bank',
       };
-      hit.entry.hits = (hit.entry.hits || 0) + 1;
-      hit.entry.updatedAt = Date.now();
-      changed = true;
+      hits.push(q);
     } else {
       pending.push({ idx: i, q });
     }
@@ -388,17 +452,28 @@ async function handleVisionReason(req, res, ctx) {
       const item = { ...p.q, answer: r.answer || '', reason: r.reason || '', source: 'ai' };
       out[p.idx] = item;
       // 只在「AI 给出答案」且识别结果完整时才写回题库，避免固化残缺记录
-      if (item.answer && isCompleteQuestion(item)) {
-        if (upsertBank(bank, item)) changed = true;
-      }
+      if (item.answer && isCompleteQuestion(item)) aiWrites.push(item);
     });
   }
 
-  if (changed) {
-    try { await saveBank(ctx.bankFile, bank); } catch { /* 题库写失败不影响本次作答 */ }
+  let count = bankCount(bank);
+  if (hits.length || aiWrites.length) {
+    // 题库的「读 → 改 → 写」放在 updateBank 的串行队列里，避免并发请求互相覆盖
+    try {
+      await updateBank(ctx.bankFile, (latest) => {
+        for (const q of hits) {
+          const hit = matchBank(latest, q.stem, q);
+          if (!hit) continue;
+          hit.entry.hits = (hit.entry.hits || 0) + 1;
+          hit.entry.updatedAt = Date.now();
+        }
+        for (const item of aiWrites) upsertBank(latest, item);
+        count = bankCount(latest);
+      });
+    } catch { /* 题库写失败不影响本次作答 */ }
   }
 
-  sendJson(res, 200, { ok: true, questions: out, bankCount: bankCount(bank) });
+  sendJson(res, 200, { ok: true, questions: out, bankCount: count });
 }
 
 /** GET /api/capture/last —— 返回最近一次截屏的原始 JPG，供悬浮窗步骤面板展示 */
@@ -447,6 +522,37 @@ async function handleRender(req, res) {
 
 /* ------------------------------ 静态资源 ------------------------------ */
 
+/**
+ * 静态托管拒绝清单。staticRoot 默认指向组件根目录，若不加限制，
+ * 浏览器可直接下载 config.json（内含 apiKey）、源码与依赖。
+ */
+const STATIC_DENY_FILES = new Set([
+  'config.json',
+  'config.example.json',
+  'package.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+]);
+const STATIC_DENY_DIRS = new Set([
+  'src',
+  'server',
+  'electron',
+  'node_modules',
+  '.git',
+  'data',
+  'recon',
+  'tools',
+]);
+
+/** 路径是否落在拒绝清单内（命中目录名、敏感文件名或以点开头的隐藏项） */
+function isDeniedStaticPath(relPath) {
+  const segments = relPath.split(/[\\/]+/).filter(Boolean).map((s) => s.toLowerCase());
+  return segments.some(
+    (s) => s.startsWith('.') || STATIC_DENY_DIRS.has(s) || STATIC_DENY_FILES.has(s),
+  );
+}
+
 async function serveStatic(req, res, url, staticRoot = ROOT) {
   let rel;
   try {
@@ -457,6 +563,10 @@ async function serveStatic(req, res, url, staticRoot = ROOT) {
   }
   if (rel === '/') rel = '/app/index.html';
   if (rel.endsWith('/')) rel += 'index.html';
+  if (isDeniedStaticPath(rel)) {
+    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }).end('Forbidden');
+    return;
+  }
 
   const filePath = path.normalize(path.join(staticRoot, rel));
   // 必须严格落在静态根目录内：用分隔符判定，避免 “md-ai-answer-x” 之类同前缀目录绕过
@@ -470,8 +580,32 @@ async function serveStatic(req, res, url, staticRoot = ROOT) {
       res.writeHead(302, { Location: `${rel.replace(/\/?$/, '/')}index.html` }).end();
       return;
     }
+    // 协商缓存：ETag 用「大小 + 修改时间」生成，不需要读文件内容；
+    // 命中 304 时直接返回，省掉一次磁盘读取（重复打开面板/刷新页面时收益明显）。
+    const etag = `W/"${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}"`;
+    const headers = {
+      'content-type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+      // no-cache 不是不缓存，而是每次先协商：本地文件随时可能被更新，避免了强缓存导致的旧页面
+      'cache-control': 'no-cache',
+      etag,
+      'last-modified': info.mtime.toUTCString(),
+    };
+    const inm = req.headers['if-none-match'];
+    if (inm) {
+      if (String(inm).split(',').some((v) => v.trim() === etag)) {
+        res.writeHead(304, headers).end();
+        return;
+      }
+    } else {
+      const ims = req.headers['if-modified-since'];
+      const since = ims ? Date.parse(ims) : NaN;
+      if (Number.isFinite(since) && Math.floor(info.mtimeMs / 1000) * 1000 <= since) {
+        res.writeHead(304, headers).end();
+        return;
+      }
+    }
     const data = await readFile(filePath);
-    res.writeHead(200, { 'content-type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream' });
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('Not Found');
@@ -486,7 +620,9 @@ async function serveStatic(req, res, url, staticRoot = ROOT) {
  * @returns {{ start:()=>Promise<{port:number,host:string}>, stop:()=>Promise<void>, config:object }}
  */
 export function createServer(opts = {}) {
-  const host = opts.host || process.env.HOST || '127.0.0.1';
+  const host = resolveBindHost(opts.host || process.env.HOST);
+  /** 局域网模式：非回环地址绑定必须显式开启，同时对 Origin 校验放宽到「同源」 */
+  const allowLan = !isLoopbackHost(host);
   const port = opts.port ?? Number(process.env.PORT ?? 8787);
   const configFile = opts.configFile || process.env.MDAI_CONFIG || path.join(ROOT, 'config.json');
   /** 静态资源根目录：默认是组件自身；桌面版可指向应用根以托管自己的界面 */
@@ -504,7 +640,7 @@ export function createServer(opts = {}) {
     // CORS/来源校验：仅放行同源、本机回环与浏览器扩展来源，
     // 挡住任意网站借本机后端盗用已配置的 apiKey（不改动同源页面的正常使用）。
     const origin = req.headers.origin;
-    if (!isAllowedOrigin(origin, req)) {
+    if (!isAllowedOrigin(origin, req, allowLan)) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }).end('Forbidden origin');
       return;
     }

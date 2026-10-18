@@ -74,6 +74,10 @@ export function pickReason(config) {
 
 /**
  * 合并多份配置，后者覆盖前者；忽略 undefined，保留 0 / '' 等有效值。
+ *
+ * 旧版扁平配置（baseUrl / apiKey / model）表示「两个模型共用一套参数」，
+ * 这里先把它展开成 vision* / reason* 再合并。否则 DEFAULT_CONFIG 里的默认
+ * baseUrl 会先占位，导致配置文件中的旧扁平 baseUrl 永远不生效。
  * @param {...(Partial<Config>|undefined|null)} sources
  * @returns {Config}
  */
@@ -81,7 +85,15 @@ export function mergeConfig(...sources) {
   const out = { ...DEFAULT_CONFIG };
   for (const src of sources) {
     if (!src) continue;
-    for (const [k, v] of Object.entries(src)) {
+    const legacy = {
+      visionBaseUrl: src.baseUrl,
+      visionApiKey: src.apiKey,
+      visionModel: src.model,
+      reasonBaseUrl: src.baseUrl,
+      reasonApiKey: src.apiKey,
+      reasonModel: src.model,
+    };
+    for (const [k, v] of Object.entries({ ...legacy, ...src })) {
       if (v !== undefined && v !== null && v !== '') out[k] = v;
     }
   }
@@ -157,12 +169,23 @@ export function configFromEnv(env = process.env) {
 export function configFromArgs(args = {}) {
   /** @type {Partial<Config>} */
   const out = {};
-  if (args['vision-base-url'] || args['base-url']) out.visionBaseUrl = args['vision-base-url'] || args['base-url'];
-  if (args['vision-api-key'] || args['api-key']) out.visionApiKey = args['vision-api-key'] || args['api-key'];
-  if (args['vision-model'] || args.model) out.visionModel = args['vision-model'] || args.model;
-  if (args['reason-base-url']) out.reasonBaseUrl = args['reason-base-url'];
-  if (args['reason-api-key']) out.reasonApiKey = args['reason-api-key'];
-  if (args['reason-model']) out.reasonModel = args['reason-model'];
+  // --base-url / --api-key / --model 是旧版「单模型共用」语义，两个模型都覆盖；
+  // 分模型的 --vision-* / --reason-* 优先。
+  const visionBaseUrl = args['vision-base-url'] || args['base-url'];
+  if (visionBaseUrl) out.visionBaseUrl = visionBaseUrl;
+  const reasonBaseUrl = args['reason-base-url'] || args['base-url'];
+  if (reasonBaseUrl) out.reasonBaseUrl = reasonBaseUrl;
+
+  const visionApiKey = args['vision-api-key'] || args['api-key'];
+  if (visionApiKey) out.visionApiKey = visionApiKey;
+  const reasonApiKey = args['reason-api-key'] || args['api-key'];
+  if (reasonApiKey) out.reasonApiKey = reasonApiKey;
+
+  const visionModel = args['vision-model'] || args.model;
+  if (visionModel) out.visionModel = visionModel;
+  const reasonModel = args['reason-model'] || args.model;
+  if (reasonModel) out.reasonModel = reasonModel;
+
   if (args.concurrency) out.concurrency = Number(args.concurrency);
   if (args['batch-size']) out.batchSize = Number(args['batch-size']);
   return out;

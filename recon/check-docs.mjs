@@ -51,17 +51,17 @@ for (const [p, meta] of Object.entries(tools.artifacts)) {
 
 // ---------- 3) API-node.md 里写的每个导出都必须真实存在 ----------
 const exportChecks = [
-  ['src/browser.mjs', ['HOME', 'findChromium', 'cdpAlive', 'findLiveCdp', 'ensureChromium', 'connect', 'findPage', 'readyPage', 'tidy', 'focusWindow', 'waitContent']],
-  ['src/login-flow.mjs', ['LOGIN_URL', 'API_USERINFO', 'loadAccount', 'checkLogin', 'captchaVisible', 'fillLoginForm', 'ensureLoggedIn']],
-  ['src/session.mjs', ['ensureSession']],
-  ['src/python.mjs', ['PY']],
+  ['src/core/browser.mjs', ['HOME', 'findChromium', 'cdpAlive', 'findLiveCdp', 'ensureChromium', 'connect', 'findPage', 'readyPage', 'tidy', 'focusWindow', 'waitContent']],
+  ['src/core/login-flow.mjs', ['LOGIN_URL', 'API_USERINFO', 'loadAccount', 'checkLogin', 'captchaVisible', 'fillLoginForm', 'ensureLoggedIn']],
+  ['src/flows/session.mjs', ['ensureSession']],
+  ['src/core/python.mjs', ['PY']],
 ];
 
 // 允许在「其他模块」章节里集中记录、不必逐个展开的导出
 const NODE_DOC_OPTIONAL = new Set(['askLine', 'askSecret', 'STORE', 'LEGACY', 'FIELD_ALIASES']);
 for (const [file, names] of [
-  ['src/accounts.mjs', ['resolveAccount', 'normalizeAccount', 'saveAccount', 'importAccount', 'exportAccount', 'mask', 'fieldHelp', 'harden', 'STORE', 'LEGACY', 'FIELD_ALIASES']],
-  ['src/prompt.mjs', ['askLine', 'askSecret']],
+  ['src/core/accounts.mjs', ['resolveAccount', 'normalizeAccount', 'saveAccount', 'importAccount', 'exportAccount', 'mask', 'fieldHelp', 'harden', 'STORE', 'LEGACY', 'FIELD_ALIASES']],
+  ['src/core/prompt.mjs', ['askLine', 'askSecret']],
 ]) {
   if (!existsSync(join(ROOT, file))) { problems.push(`模块不存在：${file}`); continue; }
   const src = read(file);

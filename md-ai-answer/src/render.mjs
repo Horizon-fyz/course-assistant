@@ -64,11 +64,13 @@ export function renderAnswerMarkdown({ questions, answers, meta = {} }) {
     const a = answers.get(q.id) || {};
     const type = TYPE_LABELS[q.type] || '';
     const conf = typeof a.confidence === 'number' ? `（置信度 ${a.confidence}）` : '';
+    const no = q.number ?? q.id ?? '';
+    const options = Array.isArray(q.options) ? q.options : [];
 
-    lines.push(`**${q.number}. ${q.stem}**${type ? ` _(${type})_` : ''}`);
+    lines.push(`**${no}. ${q.stem}**${type ? ` _(${type})_` : ''}`);
     lines.push('');
-    if (q.options.length) {
-      for (const o of q.options) lines.push(`- ${o.key}. ${o.text}`);
+    if (options.length) {
+      for (const o of options) lines.push(`- ${o.key}. ${o.text}`);
       lines.push('');
     }
     lines.push(`- 答案：**${a.answer || '（未作答）'}**${conf}`);
@@ -95,6 +97,8 @@ export function renderFilledMarkdown({ sourceText, questions, answers }) {
   // 从后往前处理，保证前面的行号不受插入影响
   const sorted = [...questions].sort((a, b) => b.endLine - a.endLine);
   for (const q of sorted) {
+    // 外部调用方可能传入没有行号信息的题目；行号缺失时跳过，避免插到文件开头
+    if (!Number.isFinite(q.startLine) || !Number.isFinite(q.endLine)) continue;
     // 把插入点回退到该题最后一行非空内容之后
     let insertAt = q.endLine;
     while (insertAt > q.startLine && lines[insertAt - 1].trim() === '') insertAt--;

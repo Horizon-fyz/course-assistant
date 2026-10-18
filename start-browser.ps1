@@ -27,7 +27,7 @@ $root = $PSScriptRoot
 if ($Browser -eq 'firefox') {
   Write-Host '启动 Firefox（Playwright 自带构建）...'
   $env:PLAYWRIGHT_BROWSERS_PATH = "$root\ms-playwright"
-  node "$root\src\launch-firefox.mjs"
+  node "$root\src\tools\launch-firefox.mjs"
   exit $LASTEXITCODE
 }
 
@@ -45,7 +45,7 @@ function Find-CdpPort {
 $live = Find-CdpPort
 if ($live) {
   Write-Host "调试端口已就绪: $($live.Version) (端口 $($live.Port))"
-  Write-Host '接下来: node src\session.mjs'
+  Write-Host '接下来: node src\flows\session.mjs'
   exit 0
 }
 
@@ -94,9 +94,9 @@ for ($i = 0; $i -lt 40; $i++) {
     Write-Host ''
     Write-Host '接下来：'
     Write-Host '  1) 在浏览器窗口确认已登录（需要时用「学号登录」，选学校后填学号密码）'
-    Write-Host '  2) node src\session.mjs          验证会话'
-    Write-Host '  3) node src\resolve-courses.mjs  自动发现并解析课程'
-    Write-Host '  4) node src\focus.mjs            窗口被挡住时置前'
+    Write-Host '  2) node src\flows\session.mjs          验证会话'
+    Write-Host '  3) node src\tools\resolve-courses.mjs  自动发现并解析课程'
+    Write-Host '  4) node src\tools\focus.mjs            窗口被挡住时置前'
     exit 0
   }
 }

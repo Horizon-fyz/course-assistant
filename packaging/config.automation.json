@@ -1,0 +1,8 @@
+{
+  "reasonBaseUrl": "https://api.deepseek.com/v1",
+  "reasonApiKey": "",
+  "reasonModel": "deepseek-chat",
+  "temperature": 0.2,
+  "timeoutMs": 60000,
+  "maxRetries": 3
+}

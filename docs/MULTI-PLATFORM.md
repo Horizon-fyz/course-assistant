@@ -15,7 +15,7 @@
 
 ```powershell
 # 打包便携版：生成 dist\智慧树助手\，整个目录可拷走，双击「智慧树助手.exe」运行
-powershell -NoProfile -ExecutionPolicy Bypass -File build-portable.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build-portable.ps1
 ```
 
 **流程**：

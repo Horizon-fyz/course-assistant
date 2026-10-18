@@ -5,7 +5,7 @@
 //       /r:System.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll ^
 //       /out:"设置AI密钥.exe" tools\setup-ai.cs
 //
-// 功能：读写 app\md-ai-answer\config.json 里的 DeepSeek 配置（密钥留空也能正常跑）。
+// 功能：读写 app\md-ai-answer\config.json 里的思考模型配置（OpenAI 兼容接口，密钥留空也能正常跑）。
 
 using System;
 using System.Collections;
@@ -40,16 +40,63 @@ namespace ZhiHuiShuSetup
 
     internal sealed class SetupForm : Form
     {
+        private sealed class ProviderPreset
+        {
+            public readonly string Name;
+            public readonly string BaseUrl;
+            public readonly string Model;
+
+            public ProviderPreset(string name, string baseUrl, string model)
+            {
+                Name = name;
+                BaseUrl = baseUrl;
+                Model = model;
+            }
+
+            public override string ToString() { return Name; }
+        }
+
+        /** 常用 OpenAI 兼容厂商（仅文本/推理模型）；空 BaseUrl 表示自定义 */
+        private static readonly ProviderPreset[] Presets = new ProviderPreset[]
+        {
+            new ProviderPreset("DeepSeek", "https://api.deepseek.com/v1", "deepseek-reasoner"),
+            new ProviderPreset("阿里云百炼（通义千问）", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-max"),
+            new ProviderPreset("智谱 AI（GLM）", "https://open.bigmodel.cn/api/paas/v4", "glm-4.6"),
+            new ProviderPreset("月之暗面（Kimi）", "https://api.moonshot.cn/v1", "kimi-k2-0905-preview"),
+            new ProviderPreset("硅基流动 SiliconFlow", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3"),
+            new ProviderPreset("火山方舟（豆包）", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-1-6-250615"),
+            new ProviderPreset("腾讯混元", "https://api.hunyuan.cloud.tencent.com/v1", "hunyuan-t1-latest"),
+            new ProviderPreset("百度千帆（文心一言）", "https://qianfan.baidubce.com/v2", "ernie-4.5-turbo-128k"),
+            new ProviderPreset("MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M1"),
+            new ProviderPreset("阶跃星辰 StepFun", "https://api.stepfun.com/v1", "step-2-16k"),
+            new ProviderPreset("零一万物（Yi）", "https://api.lingyiwanwu.com/v1", "yi-lightning"),
+            new ProviderPreset("讯飞星火", "https://spark-api-open.xf-yun.com/v1", "4.0Ultra"),
+            new ProviderPreset("OpenAI", "https://api.openai.com/v1", "gpt-4.1-mini"),
+            new ProviderPreset("OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-4.1"),
+            new ProviderPreset("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+            new ProviderPreset("Ollama（本地）", "http://127.0.0.1:11434/v1", "qwen3:8b"),
+            new ProviderPreset("LM Studio（本地）", "http://127.0.0.1:1234/v1", ""),
+            new ProviderPreset("vLLM / 其它本地服务", "http://127.0.0.1:8000/v1", ""),
+            new ProviderPreset("自定义（其它 OpenAI 兼容接口）", "", ""),
+        };
+
         private readonly string _configPath;
+        private readonly ComboBox _provider = new ComboBox();
         private readonly TextBox _baseUrl = new TextBox();
         private readonly TextBox _model = new TextBox();
         private readonly TextBox _apiKey = new TextBox();
         private readonly CheckBox _show = new CheckBox();
+        private readonly LinkLabel _link = new LinkLabel();
+        private bool _loading;
 
         public SetupForm()
         {
-            _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
-                "app", "md-ai-answer", "config.json");
+            // 两种分发形态：自动答题包写在 app\md-ai-answer\config.json；
+            // 桌面助手包写在根目录 config.json（与外壳 ZHS_CONFIG 一致）。优先沿用已存在的那个。
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string legacy = Path.Combine(baseDir, "app", "md-ai-answer", "config.json");
+            string rootCfg = Path.Combine(baseDir, "config.json");
+            _configPath = File.Exists(legacy) ? legacy : (File.Exists(rootCfg) ? rootCfg : legacy);
 
             Text = "AI 密钥设置 - 智慧树一键全自动";
             Font = new Font("Microsoft YaHei UI", 9F);
@@ -57,12 +104,12 @@ namespace ZhiHuiShuSetup
             MaximizeBox = false;
             MinimizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(560, 322);
+            ClientSize = new Size(560, 370);
             AutoScaleMode = AutoScaleMode.Font;
 
             var title = new Label
             {
-                Text = "DeepSeek API 密钥（可选）",
+                Text = "AI 接口设置（OpenAI 兼容）",
                 Font = new Font("Microsoft YaHei UI", 13F, FontStyle.Bold),
                 AutoSize = true,
                 Location = new Point(20, 16),
@@ -71,53 +118,55 @@ namespace ZhiHuiShuSetup
 
             var desc = new Label
             {
-                Text = "不填也能跑：题库没覆盖的题会随机作答。\n填了密钥后，遇到新题会交给 AI 作答，正确率更高。",
+                Text = "选厂商自动填地址与模型，也可选「自定义」手填任意兼容接口。\n不填密钥也能跑：题库没覆盖的题会随机作答。",
                 ForeColor = Color.FromArgb(90, 90, 90),
                 AutoSize = true,
                 Location = new Point(22, 52),
             };
             Controls.Add(desc);
 
-            AddRow("API 地址", _baseUrl, 92);
-            AddRow("模型", _model, 132);
-            AddRow("API 密钥", _apiKey, 172);
+            _provider.DropDownStyle = ComboBoxStyle.DropDownList;
+            _provider.Items.AddRange(Presets);
+            _provider.SelectedIndexChanged += delegate { OnProviderChanged(); };
+            AddRow("厂商预设", _provider, 96);
+            AddRow("API 地址", _baseUrl, 136);
+            AddRow("模型", _model, 176);
+            AddRow("API 密钥", _apiKey, 216);
 
             _apiKey.UseSystemPasswordChar = true;
-            _apiKey.Width = 410;
 
             _show.Text = "显示密钥";
             _show.AutoSize = true;
-            _show.Location = new Point(120, 206);
+            _show.Location = new Point(120, 250);
             _show.CheckedChanged += delegate { _apiKey.UseSystemPasswordChar = !_show.Checked; };
             Controls.Add(_show);
 
             var hint = new Label
             {
-                Text = "密钥只保存在本机：app\\md-ai-answer\\config.json",
+                Text = "地址填到 /v1 这一级即可（粘贴完整 /chat/completions 也会自动识别）。密钥只保存在本机："
+                    + _configPath,
                 ForeColor = Color.FromArgb(120, 120, 120),
-                AutoSize = true,
-                Location = new Point(22, 236),
+                AutoSize = false,
+                Size = new Size(516, 20),
+                Location = new Point(22, 278),
             };
             Controls.Add(hint);
 
-            var link = new LinkLabel
-            {
-                Text = "没有密钥？点这里去 DeepSeek 申请",
-                AutoSize = true,
-                Location = new Point(22, 260),
-            };
-            link.LinkClicked += delegate
+            _link.Text = "没有密钥？点这里去 DeepSeek 申请";
+            _link.AutoSize = true;
+            _link.Location = new Point(22, 302);
+            _link.LinkClicked += delegate
             {
                 try { Process.Start("https://platform.deepseek.com/api_keys"); }
                 catch { }
             };
-            Controls.Add(link);
+            Controls.Add(_link);
 
             var save = new Button
             {
                 Text = "保存",
                 Size = new Size(96, 32),
-                Location = new Point(342, 278),
+                Location = new Point(342, 322),
             };
             save.Click += delegate { Save(); };
             Controls.Add(save);
@@ -126,10 +175,18 @@ namespace ZhiHuiShuSetup
             {
                 Text = "取消",
                 Size = new Size(96, 32),
-                Location = new Point(446, 278),
+                Location = new Point(446, 322),
                 DialogResult = DialogResult.Cancel,
             };
             Controls.Add(cancel);
+
+            // 手动改地址后，自动反查对应厂商（找不到就归为自定义）
+            _baseUrl.Leave += delegate
+            {
+                if (_loading) return;
+                SelectPresetByBaseUrl(_baseUrl.Text);
+                UpdateLink();
+            };
 
             AcceptButton = save;
             CancelButton = cancel;
@@ -137,7 +194,7 @@ namespace ZhiHuiShuSetup
             LoadConfig();
         }
 
-        private void AddRow(string caption, TextBox box, int top)
+        private void AddRow(string caption, Control box, int top)
         {
             var label = new Label
             {
@@ -152,6 +209,63 @@ namespace ZhiHuiShuSetup
             box.Location = new Point(118, top);
             box.Size = new Size(412, 26);
             Controls.Add(box);
+        }
+
+        /** 统一地址格式：去空白、去尾斜杠、去掉误粘贴的 /chat/completions */
+        private static string NormalizeBaseUrl(string url)
+        {
+            var s = (url ?? "").Trim().TrimEnd('/');
+            const string suffix = "/chat/completions";
+            if (s.Length >= suffix.Length &&
+                s.Substring(s.Length - suffix.Length).Equals(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                s = s.Substring(0, s.Length - suffix.Length).TrimEnd('/');
+            }
+            return s;
+        }
+
+        /** 按地址反查厂商；未命中则选中「自定义」 */
+        private void SelectPresetByBaseUrl(string url)
+        {
+            int customIndex = Presets.Length - 1;
+            string target = NormalizeBaseUrl(url);
+
+            if (target.Length > 0)
+            {
+                for (int i = 0; i < Presets.Length; i++)
+                {
+                    string presetUrl = NormalizeBaseUrl(Presets[i].BaseUrl);
+                    if (presetUrl.Length > 0 &&
+                        presetUrl.Equals(target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _provider.SelectedIndex = i;
+                        return;
+                    }
+                }
+            }
+            _provider.SelectedIndex = customIndex;
+        }
+
+        /** 选中预设时填地址与模型；「自定义」保留用户已填内容 */
+        private void ApplyPreset(ProviderPreset preset)
+        {
+            if (preset == null || preset.BaseUrl.Length == 0) return;
+            _baseUrl.Text = preset.BaseUrl;
+            _model.Text = preset.Model;
+        }
+
+        private void OnProviderChanged()
+        {
+            if (_loading) return;
+            ApplyPreset(_provider.SelectedItem as ProviderPreset);
+            UpdateLink();
+        }
+
+        /** 仅 DeepSeek 显示申请链接 */
+        private void UpdateLink()
+        {
+            var preset = _provider.SelectedItem as ProviderPreset;
+            _link.Visible = preset != null && preset.Name == "DeepSeek";
         }
 
         private void LoadConfig()
@@ -169,12 +283,17 @@ namespace ZhiHuiShuSetup
             try
             {
                 var cfg = ReadJson(_configPath);
+                _loading = true;
                 _baseUrl.Text = Get(cfg, "reasonBaseUrl", "https://api.deepseek.com/v1");
-                _model.Text = Get(cfg, "reasonModel", "deepseek-chat");
+                _model.Text = Get(cfg, "reasonModel", "deepseek-reasoner");
                 _apiKey.Text = Get(cfg, "reasonApiKey", "");
+                SelectPresetByBaseUrl(_baseUrl.Text);
+                _loading = false;
+                UpdateLink();
             }
             catch (Exception ex)
             {
+                _loading = false;
                 MessageBox.Show("读取配置失败：\n" + ex.Message, "AI 密钥设置",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 Close();
@@ -192,7 +311,7 @@ namespace ZhiHuiShuSetup
                 var key = _apiKey.Text.Trim();
 
                 cfg["reasonBaseUrl"] = baseUrl.Length > 0 ? baseUrl : "https://api.deepseek.com/v1";
-                cfg["reasonModel"] = model.Length > 0 ? model : "deepseek-chat";
+                cfg["reasonModel"] = model.Length > 0 ? model : "deepseek-reasoner";
                 cfg["reasonApiKey"] = key;
 
                 if (!cfg.ContainsKey("temperature")) cfg["temperature"] = 0.2;
@@ -201,7 +320,7 @@ namespace ZhiHuiShuSetup
 
                 var json = ToJson(cfg) + Environment.NewLine;
                 Directory.CreateDirectory(Path.GetDirectoryName(_configPath));
-                File.WriteAllText(_configPath, json, new UTF8Encoding(false));
+                WriteTextAtomic(_configPath, json);
 
                 MessageBox.Show(
                     key.Length > 0
@@ -214,6 +333,34 @@ namespace ZhiHuiShuSetup
             {
                 MessageBox.Show("保存失败：\n" + ex.Message, "AI 密钥设置",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /** 原子写：先写临时文件再替换，避免写一半崩溃导致配置文件损坏 */
+        private static void WriteTextAtomic(string path, string text)
+        {
+            string tmp = path + ".tmp";
+            try
+            {
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                if (File.Exists(path))
+                {
+                    try { File.Replace(tmp, path, null); }
+                    catch
+                    {
+                        File.Copy(tmp, path, true);
+                        File.Delete(tmp);
+                    }
+                }
+                else
+                {
+                    File.Move(tmp, path);
+                }
+            }
+            catch
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                throw;
             }
         }
 

@@ -9,6 +9,8 @@
  * 说明：旧的内置浏览器自动化（扫描本页 / 回填本页 / 自动登录）源码仍在宿主里，
  * 但已不再使用，本页也不再调用。
  */
+import { AI_PROVIDERS, CUSTOM_PROVIDER_ID, findProviderByBaseUrl, providersFor } from './ai-presets.js';
+
 const $ = (id) => document.getElementById(id);
 const bridge = window.zhs;
 
@@ -280,6 +282,84 @@ async function clearBank() {
 
 /* ------------------------------ 设置 ------------------------------ */
 
+const CUSTOM_HINT = '任意兼容 OpenAI /chat/completions 的接口都可以：填基础地址（通常以 /v1 结尾），模型名按服务商文档填写，留空则使用接口默认模型。';
+
+function providerInputs(channel) {
+  return {
+    select: $(`cfg-${channel}-provider`),
+    baseUrl: $(`cfg-${channel}-baseUrl`),
+    model: $(`cfg-${channel}-model`),
+    models: $(`cfg-${channel}-models`),
+    hint: $(`cfg-${channel}-hint`),
+  };
+}
+
+const providerById = (id) => AI_PROVIDERS.find((p) => p.id === id) || null;
+const providerModels = (channel, provider) => (provider && (channel === 'vision' ? provider.visionModels : provider.reasonModels)) || [];
+
+function initProviderSelects() {
+  for (const channel of ['vision', 'reason']) {
+    const sel = $(`cfg-${channel}-provider`);
+    sel.innerHTML = '';
+    for (const p of providersFor(channel)) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    }
+    const custom = document.createElement('option');
+    custom.value = CUSTOM_PROVIDER_ID;
+    custom.textContent = '自定义（其它 OpenAI 兼容接口）';
+    sel.appendChild(custom);
+  }
+}
+
+/** 填入厂商的常用模型下拉候选（输入框仍可自由改写） */
+function fillModelOptions(channel, provider) {
+  const { models } = providerInputs(channel);
+  models.innerHTML = '';
+  for (const name of providerModels(channel, provider)) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    models.appendChild(opt);
+  }
+}
+
+function setProviderHint(channel, provider) {
+  const { hint } = providerInputs(channel);
+  hint.textContent = provider
+    ? (provider.note || `已填入 ${provider.name} 的兼容地址，模型可在下拉中选择，也可手动输入其它模型 ID。`)
+    : CUSTOM_HINT;
+}
+
+/** 应用厂商预设；fill=false 时只更新下拉与提示，不改动用户已保存的地址/模型 */
+function applyProvider(channel, provider, fill) {
+  const { select, baseUrl, model } = providerInputs(channel);
+  fillModelOptions(channel, provider);
+  setProviderHint(channel, provider);
+  if (!provider) return;
+  select.value = provider.id;
+  if (!fill) return;
+
+  baseUrl.value = provider.baseUrl;
+  const names = providerModels(channel, provider);
+  if (names.length) model.value = names[0];
+}
+
+/** 选择厂商：填入官方地址与首个常用模型 */
+function onProviderChange(channel) {
+  const id = $(`cfg-${channel}-provider`).value;
+  applyProvider(channel, providerById(id), id !== CUSTOM_PROVIDER_ID);
+}
+
+/** 手填/粘贴地址后反查厂商；未命中则归为自定义，不覆盖任何输入 */
+function detectProvider(channel) {
+  const { select, baseUrl } = providerInputs(channel);
+  const found = findProviderByBaseUrl(baseUrl.value, channel);
+  applyProvider(channel, found, false);
+  if (!found) select.value = CUSTOM_PROVIDER_ID;
+}
+
 async function loadConfigForm() {
   const cfg = await bridge.getConfig();
   $('cfg-vision-baseUrl').value = cfg.visionBaseUrl || '';
@@ -290,6 +370,10 @@ async function loadConfigForm() {
   $('cfg-reason-apiKey').value = cfg.reasonApiKey || '';
   $('cfg-concurrency').value = cfg.concurrency || 3;
   $('cfg-batchSize').value = cfg.batchSize || 5;
+
+  detectProvider('vision');
+  detectProvider('reason');
+
   const ready = !!(cfg.visionApiKey && cfg.reasonApiKey);
   $('ai-badge').textContent = ready ? 'AI 已配置' : 'AI 未配置';
   $('ai-badge').className = ready ? 'badge ok' : 'badge';
@@ -367,6 +451,10 @@ function bindEvents() {
   // 设置
   $('btn-save-cfg').addEventListener('click', saveConfigForm);
   $('btn-reload-cfg').addEventListener('click', loadConfigForm);
+  for (const channel of ['vision', 'reason']) {
+    $(`cfg-${channel}-provider`).addEventListener('change', () => onProviderChange(channel));
+    $(`cfg-${channel}-baseUrl`).addEventListener('change', () => detectProvider(channel));
+  }
 
   // 关于
   $('btn-open-dir').addEventListener('click', async () => {
@@ -378,6 +466,7 @@ function bindEvents() {
 async function init() {
   bindTheme();
   bindTabs();
+  initProviderSelects();
   bindEvents();
   await loadConfigForm();
   await refreshBank();

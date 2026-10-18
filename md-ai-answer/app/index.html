@@ -36,6 +36,9 @@
     <section class="card">
       <h2>2. AI 接口配置</h2>
       <div class="grid">
+        <label>厂商预设
+          <select id="cfg-provider"></select>
+        </label>
         <label>接口地址 baseUrl
           <input id="cfg-baseUrl" placeholder="https://api.deepseek.com/v1" />
         </label>
@@ -43,7 +46,8 @@
           <input id="cfg-apiKey" type="password" placeholder="留空则使用后端已配置的密钥" />
         </label>
         <label>模型 model
-          <input id="cfg-model" placeholder="deepseek-chat" />
+          <input id="cfg-model" list="cfg-models" placeholder="deepseek-chat" />
+          <datalist id="cfg-models"></datalist>
         </label>
         <label>并发 concurrency
           <input id="cfg-concurrency" type="number" min="1" value="3" />
@@ -52,6 +56,7 @@
           <input id="cfg-batchSize" type="number" min="1" value="5" />
         </label>
       </div>
+      <p class="muted" id="cfg-hint"></p>
       <div class="row">
         <button id="btn-answer" class="primary">开始答题</button>
         <button id="btn-mock">离线演示（不调 AI）</button>

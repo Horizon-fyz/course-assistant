@@ -2,8 +2,9 @@
 // 说明：这里自带一个极简 Markdown 渲染器（只处理我们生成器用到的语法），
 //       目的是让打印验证不依赖任何外部 Markdown 工具。
 import { chromium } from 'playwright';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = join(import.meta.dirname, '..');
 
@@ -27,11 +28,19 @@ if (styleMatch) css = styleMatch[1];
 const bodyMd = md.replace(/<style>[\s\S]*?<\/style>/g, '').trim();
 
 const escHtml = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const inline = (t) => escHtml(t)
-  .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  .replace(/`([^`]+)`/g, '<code>$1</code>')
-  .replace(/(^|\s)\*(?!\s)(.+?)\*/g, '$1<em>$2</em>')
-  .replace(/\\([\\`*_[\]]|<|>)/g, '$1');
+// 先临时摘出 Markdown 转义符，渲染完再放回，避免 \< 变成 &lt; 后残留反斜杠
+const inline = (t) => {
+  const stash = [];
+  let s = String(t).replace(/\\([\\`*_[\]]|<|>)/g, (_, ch) => {
+    stash.push(ch);
+    return `\u0000${stash.length - 1}\u0000`;
+  });
+  s = escHtml(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/(^|\s)\*(?!\s)(.+?)\*/g, '$1<em>$2</em>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => escHtml(stash[Number(i)] ?? ''));
+};
 
 // ---------- 极简 Markdown → HTML ----------
 const out = [];
@@ -50,8 +59,8 @@ for (const raw of bodyMd.split('\n')) {
   const h = line.match(/^(#{1,6})\s+(.*)$/);
   if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
 
-  // 缩进选项（3 空格 + A. ...）
-  const opt = line.match(/^\s{2,}([A-Z])\.\s+(.*)$/);
+  // 缩进选项（3 空格 + A. / 27. ...）
+  const opt = line.match(/^\s{2,}([A-Z]|\d+)\.\s+(.*)$/);
   if (opt) { out.push(`<div class="opt"><span class="ol">${opt[1]}.</span> ${inline(opt[2])}</div>`); continue; }
 
   // 有序题目（1. **题干**）
@@ -109,20 +118,29 @@ writeFileSync(HTML, html, 'utf8');
 process.stderr.write(`html: ${HTML}  (${html.length} 字符)\n`);
 
 // ---------- 无头 Edge 打印 PDF ----------
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const page = await browser.newPage();
-await page.goto('file:///' + HTML.replace(/\\/g, '/'), { waitUntil: 'load', timeout: 60000 });
-await page.waitForTimeout(1200);
-await page.pdf({
-  path: PDF,
-  format: 'A4',
-  printBackground: true,
-  margin: { top: '18mm', bottom: '18mm', left: '16mm', right: '16mm' },
-  displayHeaderFooter: true,
-  headerTemplate: '<div></div>',
-  footerTemplate: '<div style="font-size:8px;color:#888;width:100%;text-align:center;">第 <span class="pageNumber"></span> / <span class="totalPages"></span> 页</div>',
-});
-await browser.close();
+let browser;
+try {
+  browser = await chromium.launch({ channel: 'msedge', headless: true });
+} catch {
+  // 没装 Edge 时退回 Playwright 自带 Chromium，避免整条文档链断掉
+  browser = await chromium.launch({ headless: true });
+}
+try {
+  const page = await browser.newPage();
+  await page.goto(pathToFileURL(HTML).href, { waitUntil: 'load', timeout: 60000 });
+  await page.waitForTimeout(1200);
+  await page.pdf({
+    path: PDF,
+    format: 'A4',
+    printBackground: true,
+    margin: { top: '18mm', bottom: '18mm', left: '16mm', right: '16mm' },
+    displayHeaderFooter: true,
+    headerTemplate: '<div></div>',
+    footerTemplate: '<div style="font-size:8px;color:#888;width:100%;text-align:center;">第 <span class="pageNumber"></span> / <span class="totalPages"></span> 页</div>',
+  });
+} finally {
+  await browser.close().catch(() => {});
+}
 
-const pdfSize = (await import('node:fs')).statSync(PDF).size;
+const pdfSize = statSync(PDF).size;
 process.stderr.write(`pdf : ${PDF}  (${(pdfSize / 1024).toFixed(1)} KB)\n`);

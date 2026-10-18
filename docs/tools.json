@@ -1,13 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "zhs-题库工具",
-  "version": "0.3.0",
-  "description": "智慧树在线学堂题库工具。可随时调用的单一入口：抓取题目 → 校验 → 生成 Markdown / Word / PDF / Excel → AI 作答。所有命令都是幂等的，可重复执行。登录凭据支持命令行 / 环境变量 / 导入文件 / 交互录入四种输入方式。",
+  "version": "0.6.0",
+  "description": "智慧树在线学堂题库工具。可随时调用的单一入口：抓取题目 → 校验 → 生成 Markdown / Word / PDF / Excel → AI 作答。所有命令都是幂等的，可重复执行。登录凭据支持命令行 / 环境变量 / 导入文件 / 交互录入四种输入方式。支持命令行、JS 复用与 MCP（stdio）三种调用方式。",
   "entrypoint": {
     "node": "zhs.mjs",
     "windows": "run.cmd",
     "invocation": "node zhs.mjs <command> [--flags]",
     "windowsInvocation": "run.cmd <command> [--flags]",
+    "mcp": {
+      "server": "mcp-server.mjs",
+      "launcher": "mcp.cmd",
+      "invocation": "node mcp-server.mjs",
+      "transport": "stdio；一行一条 JSON-RPC 2.0 消息，stdout 仅输出协议消息",
+      "tools": "17 个：zhs_status / zhs_doctor / zhs_verify / zhs_whoami / zhs_import / zhs_login / zhs_fetch / zhs_docs / zhs_solve / zhs_answer / zhs_patrol / zhs_deadline / zhs_schedule / zhs_watch / zhs_auto / zhs_all / zhs_job",
+      "documentation": "docs/API-mcp.md"
+    },
     "workingDirectory": "工作区根目录（zhs.mjs 所在目录），程序会自动切换，无需手动 cd"
   },
   "environment": {
@@ -179,6 +187,101 @@
       "sideEffects": "调用外部 AI 接口（可能产生费用）；写答案文件。未配置 AI 时直接报错退出，不发起任何请求"
     },
     {
+      "name": "answer",
+      "summary": "全自动作业：逐份打开未提交作业 → 题库匹配作答 → 暂存 → 提交（支持演练与只答不交）",
+      "params": [
+        { "name": "--dry", "type": "boolean", "required": false, "description": "演练：只列出目标作业，不操作页面" },
+        { "name": "--course", "type": "string", "required": false, "description": "只处理名称包含该值的课程" },
+        { "name": "--exam", "type": "string", "required": false, "description": "只处理指定作业/试卷" },
+        { "name": "--limit", "type": "number", "required": false, "default": "0", "description": "最多处理 N 份作业（0 = 全部）" },
+        { "name": "--no-submit", "type": "boolean", "required": false, "description": "只作答并暂存，不点提交" },
+        { "name": "--delay", "type": "number", "required": false, "default": "500", "description": "每题操作间隔毫秒（下限 120）" },
+        { "name": "--force", "type": "boolean", "required": false, "description": "存在跳过项时仍继续处理" },
+        { "name": "--no-ai", "type": "boolean", "required": false, "description": "题库未命中时不调用 AI 兜底" },
+        { "name": "--no-rethink", "type": "boolean", "required": false, "description": "关闭交卷后的错题复盘" },
+        { "name": "--no-redo", "type": "boolean", "required": false, "description": "不自动重做错题" },
+        { "name": "--attempts", "type": "number", "required": false, "default": "2", "description": "错题重做最多轮数" },
+        { "name": "--redo-wait", "type": "number", "required": false, "default": "90", "description": "重做前等待秒数" },
+        { "name": "--cross-check", "type": "boolean", "required": false, "description": "AI 答案问两次交叉验证；不一致或低置信度的题标记存疑" },
+        { "name": "--min-confidence", "type": "number", "required": false, "default": "0.7", "description": "交叉验证的置信度门槛（0~1），仅 --cross-check 时生效" },
+        { "name": "--allow-uncertain", "type": "boolean", "required": false, "description": "存在交叉验证存疑题时仍然提交（默认只作答不提交）" },
+        { "name": "--browser", "type": "enum", "enum": ["chromium", "firefox"], "default": "chromium", "required": false, "description": "使用哪个浏览器" },
+        { "name": "--browser-exe", "type": "path", "required": false, "description": "直接指定浏览器可执行文件" }
+      ],
+      "returns": { "kind": "files", "files": ["recon/apply/auto-answer-report.json", "recon/apply/submitted.json", "recon/apply/uncertain-review.json", "recon/apply/uncertain-review.md"], "exitCode": "0 全部完成 / 1 有未提交或异常" },
+      "sideEffects": "启动/复用浏览器并真实操作试卷页面；默认会点提交（--no-submit 可关闭）；写本地已提交台账与报告；可能调用 AI 兜底接口；--cross-check 时每题调用两次 AI 并写出复核清单"
+    },
+    {
+      "name": "patrol",
+      "summary": "作业巡检：拉取最新作业列表 → 识别新作业 / 状态变化 / 临近截止 → 弹 Windows 通知，可推送 Webhook",
+      "params": [
+        { "name": "--course", "type": "string", "required": false, "description": "只巡检名称包含该值的课程" },
+        { "name": "--within", "type": "number", "required": false, "default": "48", "description": "多少小时内截止的作业重点提醒" },
+        { "name": "--offline", "type": "boolean", "required": false, "description": "不打开浏览器，只用本地 papers.json 出报告" },
+        { "name": "--no-notify", "type": "boolean", "required": false, "description": "不弹 Windows 通知" },
+        { "name": "--webhook", "type": "string", "required": false, "description": "额外推送到飞书 / 企微 / 钉钉机器人（按域名自动适配格式）" },
+        { "name": "--dry", "type": "boolean", "required": false, "description": "只打印结果，不写报告与快照" },
+        { "name": "--browser", "type": "enum", "enum": ["chromium", "firefox"], "default": "chromium", "required": false, "description": "使用哪个浏览器" },
+        { "name": "--browser-exe", "type": "path", "required": false, "description": "直接指定浏览器可执行文件" }
+      ],
+      "returns": { "kind": "files", "files": ["export/patrol-report.json", "export/patrol-state.json"], "exitCode": "0 正常 / 1 有课程未取到列表 / 2 未登录" },
+      "sideEffects": "启动/复用浏览器读取作业列表；写报告与快照；弹 Windows 通知或请求 Webhook。绝不提交作业",
+      "safe": true
+    },
+    {
+      "name": "deadline",
+      "summary": "截止看板：把本地作业数据渲染成可离线打开的 HTML，按截止紧急程度分组展示未提交作业",
+      "params": [
+        { "name": "--course", "type": "string", "required": false, "description": "只看名称包含该值的课程" },
+        { "name": "--out", "type": "path", "required": false, "description": "产物输出目录，默认 export/" },
+        { "name": "--open", "type": "boolean", "required": false, "description": "生成后用默认浏览器打开" }
+      ],
+      "returns": { "kind": "files", "files": ["export/deadline-board.html"], "exitCode": "0 成功 / 1 读取数据失败" },
+      "sideEffects": "只读 papers.json 与 courses-resolved.json，写出单个 HTML 文件；不启动浏览器、不访问网络、不提交作业",
+      "safe": true
+    },
+    {
+      "name": "schedule",
+      "summary": "定时巡检：安装 / 移除 / 查看 Windows 计划任务，每天自动执行 patrol",
+      "params": [
+        { "name": "install", "type": "enum", "enum": ["install", "remove", "show"], "default": "show", "required": false, "description": "动作：install 安装 / remove 删除 / show 查看（默认）" },
+        { "name": "--time", "type": "string", "required": false, "default": "08:00", "description": "install 时的每日执行时间（HH:MM）" },
+        { "name": "--name", "type": "string", "required": false, "default": "ZHS-Patrol", "description": "计划任务名" },
+        { "name": "--webhook", "type": "string", "required": false, "description": "install 时把 Webhook 地址写进巡检命令" }
+      ],
+      "returns": { "kind": "text", "covers": ["任务是否安装成功", "下次运行时间 / 上次结果 / 实际执行的命令"], "exitCode": "0 成功 / 1 失败或任务不存在" },
+      "sideEffects": "调用 schtasks 创建或删除 Windows 计划任务（仅 Windows）"
+    },
+    {
+      "name": "watch",
+      "summary": "全自动看课：真实播放 + 1.0~1.5x 倍速 + 自动处理弹题（脚本调用 play/倍速会被风控）",
+      "params": [
+        { "name": "--dry", "type": "boolean", "required": false, "description": "演练：只列出课程与课节，不播放" },
+        { "name": "--course", "type": "string", "required": false, "description": "只处理名称包含该值的课程" },
+        { "name": "--lesson", "type": "string", "required": false, "description": "只处理「序号 + 标题」包含该值的课节" },
+        { "name": "--from", "type": "string", "required": false, "description": "从匹配的课节开始（含该节）" },
+        { "name": "--max", "type": "number", "required": false, "default": "0", "description": "每门课最多播放 N 节（0 = 全部）" },
+        { "name": "--minutes", "type": "number", "required": false, "default": "0", "description": "总时长上限（分钟，0 = 不限）" },
+        { "name": "--rate", "type": "number", "required": false, "default": "1.5", "description": "播放倍速，自动夹到 1.0~1.5" },
+        { "name": "--face-wait", "type": "number", "required": false, "default": "15", "description": "等待人工完成人脸识别的分钟数" },
+        { "name": "--no-ai", "type": "boolean", "required": false, "description": "弹题未命中题库时不调用 AI 兜底" },
+        { "name": "--no-tidy", "type": "boolean", "required": false, "description": "结束后不整理/关闭多余标签页" },
+        { "name": "--browser", "type": "enum", "enum": ["chromium", "firefox"], "default": "chromium", "required": false, "description": "使用哪个浏览器" },
+        { "name": "--browser-exe", "type": "path", "required": false, "description": "直接指定浏览器可执行文件" }
+      ],
+      "returns": { "kind": "files", "files": ["recon/apply/watch-report.json"], "exitCode": "0 全部完成 / 1 有课节未完成或课程异常" },
+      "sideEffects": "启动/复用浏览器并真实播放视频；可能停在页面等待人工完成人脸识别（默认最多 15 分钟）；可能调用 AI 兜底接口"
+    },
+    {
+      "name": "auto",
+      "summary": "全自动：先跑 answer 答题，再跑 watch 看课（答题失败仍继续看课）",
+      "params": [
+        { "name": "--dry / --course / --limit / --no-submit / --no-ai ...", "type": "flags", "required": false, "description": "同时透传给 answer 与 watch；两者同名参数含义一致" }
+      ],
+      "returns": { "kind": "files+text", "files": ["recon/apply/auto-answer-report.json", "recon/apply/submitted.json", "recon/apply/watch-report.json"], "exitCode": "0 两阶段都成功 / 1 任一阶段失败（看课阶段的结果优先）" },
+      "sideEffects": "同 answer + watch；答题阶段失败不会中断看课"
+    },
+    {
       "name": "help",
       "summary": "打印命令帮助",
       "params": [],
@@ -205,7 +308,10 @@
     "export/智慧树作业题库_打印版.docx": { "description": "Word 版", "producedBy": "docs" },
     "export/智慧树作业题库_打印版.pdf": { "description": "A4 PDF（带页码）", "producedBy": "docs" },
     "export/智慧树作业题库_打印预览.html": { "description": "打印预览页", "producedBy": "docs" },
-    "export/智慧树课程数据.xlsx": { "description": "课程总览 + 章节视频明细 + 数据来源说明", "producedBy": "docs", "requires": "export/raw.json" }
+    "export/智慧树课程数据.xlsx": { "description": "课程总览 + 章节视频明细 + 数据来源说明", "producedBy": "docs", "requires": "export/raw.json" },
+    "export/patrol-report.json": { "description": "最近一次巡检结果：新作业 / 状态变化 / 临近截止", "producedBy": "patrol" },
+    "export/patrol-state.json": { "description": "巡检快照：每份作业的首次/最近发现时间、状态、截止提醒去重记录", "producedBy": "patrol", "deletable": true },
+    "export/deadline-board.html": { "description": "作业截止看板：自包含 HTML，按紧急程度分组展示未提交作业；patrol 结束会自动刷新", "producedBy": "deadline", "deletable": true }
   },
   "config": {
     "config/credentials.json": {
@@ -232,7 +338,7 @@
       "id": "firefox-bidi",
       "summary": "Firefox 改走 WebDriver BiDi 接管（官方构建已移除 CDP，--remote-debugging-port 只剩 httpd.js）；Playwright 自带 Firefox 的 -juggler-pipe 在当前受限沙箱中不可用",
       "symptom": "若误用 Playwright 自带 Firefox：浏览器以 0xC0000005 退出，日志出现 SpawnTarget 0x80070005",
-      "workaround": "用 fetch --browser firefox（BiDi，navigator.webdriver 由 script.addPreloadScript 抹掉）；首次需在该独立 profile 里人工登录一次，或用 --firefox-profile 指向平时已登录的 profile（需先完全退出 Firefox）。只想拿会话不上浏览器可用 node src/firefox-session.mjs"
+      "workaround": "用 fetch --browser firefox（BiDi，navigator.webdriver 由 script.addPreloadScript 抹掉）；首次需在该独立 profile 里人工登录一次，或用 --firefox-profile 指向平时已登录的 profile（需先完全退出 Firefox）。只想拿会话不上浏览器可用 node src/tools/firefox-session.mjs"
     },
     {
       "id": "account-json-locked",

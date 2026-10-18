@@ -1,5 +1,5 @@
 // 环境验证：能否拉起浏览器 + 浏览器资料里是否还有登录态
-import { ensureChromium, connect, readyPage, HOME } from '../src/browser.mjs';
+import { ensureChromium, connect, readyPage, HOME } from '../src/core/browser.mjs';
 
 console.log('=== 1) 拉起 / 复用 Chromium（Edge）===');
 try {

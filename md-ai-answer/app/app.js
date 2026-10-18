@@ -9,6 +9,8 @@
  *   2. 交互与展示；文件读写优先走 Electron 原生对话框（window.mdai），否则用 Web 能力。
  */
 
+import { AI_PROVIDERS, CUSTOM_PROVIDER_ID, findProviderByBaseUrl, providersFor } from './ai-presets.js';
+
 /* ------------------------------ 后端 API 封装 ------------------------------ */
 
 /** 同源调用后端；失败时抛出带后端错误信息的异常 */
@@ -118,10 +120,69 @@ const cfgInputs = {
   concurrency: $('cfg-concurrency'),
   batchSize: $('cfg-batchSize'),
 };
+const providerSelect = $('cfg-provider');
+const cfgHint = $('cfg-hint');
 
 /* ------------------------------ 配置 ------------------------------ */
 
 const LS_KEY = 'mdai.config';
+
+const CUSTOM_HINT = '任意兼容 OpenAI /chat/completions 的接口都可以：填基础地址（通常以 /v1 结尾），模型名按服务商文档填写。';
+
+const providerById = (id) => AI_PROVIDERS.find((p) => p.id === id) || null;
+
+function initProviderSelect() {
+  providerSelect.innerHTML = '';
+  for (const p of providersFor('reason')) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    providerSelect.appendChild(opt);
+  }
+  const custom = document.createElement('option');
+  custom.value = CUSTOM_PROVIDER_ID;
+  custom.textContent = '自定义（其它 OpenAI 兼容接口）';
+  providerSelect.appendChild(custom);
+}
+
+function fillModelOptions(provider) {
+  const datalist = $('cfg-models');
+  datalist.innerHTML = '';
+  for (const name of (provider ? provider.reasonModels : [])) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    datalist.appendChild(opt);
+  }
+}
+
+function showProviderHint(provider) {
+  cfgHint.textContent = provider
+    ? (provider.note || `已填入 ${provider.name} 的兼容地址，模型可在下拉中选择，也可手动输入其它模型 ID。`)
+    : CUSTOM_HINT;
+}
+
+/** fill=false 时只同步下拉与提示，不改动已填的地址/模型 */
+function applyProvider(provider, fill) {
+  fillModelOptions(provider);
+  showProviderHint(provider);
+  if (!provider) return;
+  providerSelect.value = provider.id;
+  if (!fill) return;
+  cfgInputs.baseUrl.value = provider.baseUrl;
+  if (provider.reasonModels.length) cfgInputs.model.value = provider.reasonModels[0];
+}
+
+function onProviderChange() {
+  const id = providerSelect.value;
+  applyProvider(providerById(id), id !== CUSTOM_PROVIDER_ID);
+}
+
+/** 按当前 baseUrl 反查厂商；未命中归为自定义 */
+function syncProvider() {
+  const found = findProviderByBaseUrl(cfgInputs.baseUrl.value, 'reason');
+  applyProvider(found, false);
+  if (!found) providerSelect.value = CUSTOM_PROVIDER_ID;
+}
 
 function loadLocalConfig() {
   try {
@@ -139,12 +200,17 @@ function loadLocalConfig() {
 /** 用后端配置预填表单（密钥不回传，只提示是否已配置） */
 async function loadServerConfig() {
   try {
-    const { config } = await api('/api/config');
-    if (config.baseUrl) cfgInputs.baseUrl.value = config.baseUrl;
-    if (config.model) cfgInputs.model.value = config.model;
+    const { config = {} } = await api('/api/config');
+    // 后端只下发分模型的非敏感字段；答题走思考模型，优先用它做预填
+    const baseUrl = config.reasonBaseUrl || config.visionBaseUrl || '';
+    const model = config.reasonModel || config.visionModel || '';
+    if (baseUrl) cfgInputs.baseUrl.value = baseUrl;
+    if (model) cfgInputs.model.value = model;
     if (config.concurrency) cfgInputs.concurrency.value = config.concurrency;
     if (config.batchSize) cfgInputs.batchSize.value = config.batchSize;
-    els.backendBadge.textContent = config.hasApiKey ? '后端已配置密钥' : '后端未配置密钥';
+    syncProvider();
+    const hasKey = Boolean(config.hasReasonApiKey || config.hasVisionApiKey);
+    els.backendBadge.textContent = hasKey ? '后端已配置密钥' : '后端未配置密钥';
     els.backendBadge.hidden = false;
   } catch {
     els.backendBadge.textContent = '后端未连接';
@@ -389,6 +455,9 @@ function bindEvents() {
   els.btnExportFilled.addEventListener('click', exportFilled);
   els.showReason.addEventListener('change', renderResults);
 
+  providerSelect.addEventListener('change', onProviderChange);
+  cfgInputs.baseUrl.addEventListener('change', syncProvider);
+
   els.drop.addEventListener('dragover', (e) => {
     e.preventDefault();
     els.drop.classList.add('over');
@@ -403,6 +472,7 @@ function bindEvents() {
 }
 
 els.runtimeBadge.textContent = bridge ? '桌面版' : '浏览器';
+initProviderSelect();
 loadLocalConfig();
 bindEvents();
 loadServerConfig();

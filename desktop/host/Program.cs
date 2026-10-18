@@ -40,6 +40,7 @@ static class Host
     static int Port;
     static string Origin;
     static Process NodeProc;
+    static IntPtr NodeJob;      // Job Object：宿主退出/崩溃时由系统一并结束 node 子进程树
 
     /** 旧内置浏览器外壳（保留不调用） */
     static Form MainForm;
@@ -59,6 +60,7 @@ static class Host
     static System.Windows.Forms.Timer CaptureTimer;  // WinForms 定时器，固定跑在 UI 线程
     static bool VisionRunning;         // 是否处于「实时识题」状态
     static bool VisionBusy;            // 正在请求 /api/vision，避免重入
+    static bool VisionOnceBusy;        // 手动「识题一次」正在截屏，避免 DoEvents 期间重入
     static volatile bool CaptureBusy;  // 后台正在截屏/编码，避免定时器叠加触发
     static long LastHash;              // 上一次截屏的 dHash（9x8 差分哈希）
     static bool LastWasEmpty;          // 上一次识别是否「没识别到题目」（用于放宽变化阈值、尽快重试）
@@ -81,8 +83,13 @@ static class Host
     static bool Quitting;              // 正在真正退出：放行窗口关闭，避免被 FormClosing 拦回
 
     /** 启动加速：后端在后台线程拉起，就绪后再导航悬浮窗；窗口不再等后端 */
-    static bool BackendReady;
+    static volatile bool BackendReady;
     static bool FloatNavigated;
+
+    /** 后端 READY 信号：serve.mjs 在 listen 成功后立刻打印 READY，比定时轮询 HTTP 更早、更准 */
+    static ManualResetEvent BackendSignal;
+    /** 启动阶段耗时：从进入托管代码开始计时，各阶段日志都带上毫秒数，便于定位瓶颈 */
+    static readonly Stopwatch BootWatch = Stopwatch.StartNew();
 
     /** 单实例：再双击一次 exe 只把已有悬浮窗显示出来，不再起新进程（即便托盘图标没找到也能恢复） */
     static Mutex SingleMutex;
@@ -153,7 +160,7 @@ static class Host
         Log("exe      : " + Application.ExecutablePath);
 
         Directory.CreateDirectory(DataDir);
-        if (!File.Exists(ConfigPath)) File.WriteAllText(ConfigPath, DefaultConfig, new UTF8Encoding(false));
+        if (!File.Exists(ConfigPath)) WriteTextAtomic(ConfigPath, DefaultConfig);
 
         // 托盘图标作为启动第一步无条件创建：后续任何环节（WebView2 预热 / 建窗 / 后端）出错都不会拖累它，
         // 保证「不管怎么启动」，只要进程活着就一定能住进托盘。
@@ -174,6 +181,7 @@ static class Host
 
         // 尽早并行预热 WebView2 环境（浏览器进程冷启动最耗时），与后端启动、建窗同时进行
         PrewarmWebView2();
+        Log("WebView2 预热已触发（" + BootWatch.ElapsedMilliseconds + " ms）");
 
         // 单实例信号：第二次启动的进程会 Set 这个事件来要求显示悬浮窗
         try
@@ -223,6 +231,120 @@ static class Host
 
     /* ------------------------------ 后端 ------------------------------ */
 
+    /** 按 Windows 命令行规则给单个参数加引号（含空格/制表符/引号时才加） */
+    static string QuoteArg(string value)
+    {
+        string s = value ?? "";
+        bool need = s.Length == 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == ' ' || c == '\t' || c == '"' || c == '\n' || c == '\v') { need = true; break; }
+        }
+        if (!need) return s;
+
+        var sb = new StringBuilder("\"");
+        int backslashes = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '\\') { backslashes++; continue; }
+            if (c == '"')
+            {
+                sb.Append('\\', backslashes * 2 + 1);
+                sb.Append('"');
+                backslashes = 0;
+                continue;
+            }
+            sb.Append('\\', backslashes);
+            backslashes = 0;
+            sb.Append(c);
+        }
+        sb.Append('\\', backslashes * 2);
+        sb.Append('"');
+        return sb.ToString();
+    }
+
+    /* Job Object：把 node 绑进作业对象并设置「句柄关闭即杀进程」，
+       这样无论宿主是正常退出、崩溃还是被任务管理器结束，都不会留下孤儿 node。 */
+    const int JobObjectExtendedLimitInformation = 9;
+    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+
+    [DllImport("kernel32.dll")]
+    static extern bool SetInformationJobObject(IntPtr hJob, int infoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
+
+    [DllImport("kernel32.dll")]
+    static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr hObject);
+
+    static void AttachNodeToJob(Process p)
+    {
+        try
+        {
+            if (NodeJob == IntPtr.Zero)
+            {
+                NodeJob = CreateJobObject(IntPtr.Zero, null);
+                if (NodeJob == IntPtr.Zero) { Log("!! Job Object 创建失败"); return; }
+
+                var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                int len = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+                IntPtr buf = Marshal.AllocHGlobal(len);
+                try
+                {
+                    Marshal.StructureToPtr(info, buf, false);
+                    if (!SetInformationJobObject(NodeJob, JobObjectExtendedLimitInformation, buf, (uint)len))
+                        Log("!! Job Object 设置失败: " + Marshal.GetLastWin32Error());
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            if (!AssignProcessToJobObject(NodeJob, p.Handle))
+                Log("!! node 加入 Job Object 失败: " + Marshal.GetLastWin32Error());
+        }
+        catch (Exception ex) { Log("!! Job Object 绑定异常: " + ex.Message); }
+    }
+
     static int FindFreePort()
     {
         var l = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
@@ -246,7 +368,7 @@ static class Host
 
         var psi = new ProcessStartInfo();
         psi.FileName = NodePath();
-        psi.Arguments = "\"" + serve + "\"";
+        psi.Arguments = QuoteArg(serve);
         psi.WorkingDirectory = AppDir;
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;
@@ -255,29 +377,80 @@ static class Host
         psi.EnvironmentVariables["PORT"] = Port.ToString();
         psi.EnvironmentVariables["ZHS_CONFIG"] = ConfigPath;
 
+        BackendSignal = new ManualResetEvent(false);
+
         NodeProc = new Process();
         NodeProc.StartInfo = psi;
-        NodeProc.OutputDataReceived += delegate(object s, DataReceivedEventArgs e) { if (e.Data != null) Log("[node] " + e.Data); };
+        NodeProc.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
+        {
+            if (e.Data == null) return;
+            // serve.mjs 在 listen 成功后立刻输出 READY：先置信号再写日志，缩短就绪到导航的延迟
+            if (e.Data.StartsWith("READY ", StringComparison.Ordinal))
+            {
+                var signal = BackendSignal;
+                if (signal != null) { try { signal.Set(); } catch (ObjectDisposedException) { } }
+            }
+            Log("[node] " + e.Data);
+        };
         NodeProc.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e) { if (e.Data != null) Log("[node!] " + e.Data); };
         NodeProc.Start();
+        AttachNodeToJob(NodeProc);
         NodeProc.BeginOutputReadLine();
         NodeProc.BeginErrorReadLine();
-        Log("后端已拉起: " + psi.FileName);
+        Log("后端进程已拉起（" + BootWatch.ElapsedMilliseconds + " ms）: " + psi.FileName);
 
         string health = Origin + "/api/health";
-        for (int i = 0; i < 60; i++)
+        // 主路径：等 node 打印 READY（listen 已成功，通常比下一次轮询更早）。
+        // 兼容路径：旧版 serve.mjs 没有 READY 输出时，每秒探一次健康接口。
+        DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+        int tick = 0;
+        while (true)
         {
+            // node 自己退出（缺文件 / 端口被占 / 语法错误）时立刻报错，不再空等
             try
             {
-                var req = (HttpWebRequest)WebRequest.Create(health);
-                req.Timeout = 1000;
-                using (var resp = (HttpWebResponse)req.GetResponse())
-                using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                { sr.ReadToEnd(); Log("后端就绪: " + health); return; }
+                if (NodeProc.HasExited)
+                    throw new Exception("后端进程已退出（退出码 " + NodeProc.ExitCode + "），详见启动日志。");
             }
-            catch { System.Threading.Thread.Sleep(400); }
+            catch (InvalidOperationException) { }
+
+            if (BackendSignal.WaitOne(100)) break;
+
+            tick++;
+            if (tick % 10 == 0 && HealthOk(health))
+            {
+                Log("后端就绪（健康检查，" + BootWatch.ElapsedMilliseconds + " ms）: " + health);
+                return;
+            }
+            if (DateTime.UtcNow >= deadline)
+                throw new Exception("后端启动超时（" + health + "）");
         }
-        throw new Exception("后端启动超时（" + health + "）");
+
+        // READY 只代表端口已监听，再校验一次接口可用；一般第一次就通过
+        for (int i = 0; i < 10; i++)
+        {
+            if (HealthOk(health))
+            {
+                Log("后端就绪（" + BootWatch.ElapsedMilliseconds + " ms）: " + health);
+                return;
+            }
+            System.Threading.Thread.Sleep(100);
+        }
+        throw new Exception("后端已监听但健康检查失败（" + health + "）");
+    }
+
+    /** 健康检查：只用于启动阶段的就绪确认，超时压到 800ms，避免拖慢首帧 */
+    static bool HealthOk(string url)
+    {
+        try
+        {
+            var req = (HttpWebRequest)WebRequest.Create(url);
+            req.Timeout = 800;
+            using (var resp = (HttpWebResponse)req.GetResponse())
+            using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                return sr.ReadToEnd().IndexOf("\"ok\"", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        catch { return false; }
     }
 
     /** 后台线程拉起后端，就绪后再导航悬浮窗——避免阻塞 UI 线程、拖慢窗口出现 */
@@ -308,7 +481,7 @@ static class Host
         if (core == null) return;
         FloatNavigated = true;
         string url = Origin + "/desktop/ui/float.html";
-        try { core.Navigate(url); Log("悬浮窗: 已导航 → " + url); }
+        try { core.Navigate(url); Log("悬浮窗: 已导航（" + BootWatch.ElapsedMilliseconds + " ms）→ " + url); }
         catch (Exception ex) { Log("!! 悬浮窗导航失败: " + ex.Message); }
     }
 
@@ -621,7 +794,7 @@ static class Host
         Log("悬浮窗截屏排除=" + FloatCaptureExcluded);
 
         FloatForm.Show();
-        Log("悬浮窗已显示");
+        Log("悬浮窗已显示（" + BootWatch.ElapsedMilliseconds + " ms）");
 
         ApplyRoundRegion(FloatForm, 12);   // 无边框窗口圆角：半径对齐 CSS 卡片 --r-lg(12px)
 
@@ -803,6 +976,12 @@ static class Host
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
             using (var k = Process.Start(psi)) { if (k != null) k.WaitForExit(3000); }
+        }
+        catch { }
+        // 关掉作业对象句柄：KILL_ON_JOB_CLOSE 保证 node 及其派生的全部子进程一起结束
+        try
+        {
+            if (NodeJob != IntPtr.Zero) { CloseHandle(NodeJob); NodeJob = IntPtr.Zero; }
         }
         catch { }
     }
@@ -1537,9 +1716,10 @@ static class Host
                 PrewarmWebView2();                 // 若启动流程已预热则直接复用同一个任务
                 Log(label + ": 等待 WebView2 环境就绪");
                 Env = await EnvTask;
-                Log(label + ": 环境已创建，运行时版本 " + Env.BrowserVersionString);
+                Log(label + ": 环境已创建（" + BootWatch.ElapsedMilliseconds + " ms），运行时版本 " + Env.BrowserVersionString);
             }
             await view.EnsureCoreWebView2Async(Env);
+            Log(label + ": WebView2 控件已就绪（" + BootWatch.ElapsedMilliseconds + " ms）");
             // 无边框窗口（悬浮窗/助手面板）背景透明：让页面 body 的透明区露出窗口，
             // 配合窗口圆角 Region，四角才真正透出桌面而不是方块实色。
             if (view == FloatView || view == AssistantView)
@@ -1821,6 +2001,36 @@ static class Host
         catch { return Js.Deserialize<Dictionary<string, object>>(DefaultConfig); }
     }
 
+    /** 原子写：先写同目录临时文件再替换，避免断电/崩溃留下半截 config.json */
+    static void WriteTextAtomic(string file, string text)
+    {
+        string dir = Path.GetDirectoryName(file);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        string tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(tmp, text, new UTF8Encoding(false));
+            if (File.Exists(file))
+            {
+                try { File.Replace(tmp, file, null); }
+                catch
+                {
+                    File.Copy(tmp, file, true);
+                    File.Delete(tmp);
+                }
+            }
+            else
+            {
+                File.Move(tmp, file);
+            }
+        }
+        catch
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            throw;
+        }
+    }
+
     static void OnMessage(WebView2 view, CoreWebView2WebMessageReceivedEventArgs e)
     {
         Dictionary<string, object> msg;
@@ -1828,8 +2038,24 @@ static class Host
         catch (Exception ex) { Log("!! 消息解析失败: " + ex.Message); return; }
         if (msg == null || !msg.ContainsKey("id") || !msg.ContainsKey("type")) return;
 
-        int id = Convert.ToInt32(msg["id"]);
+        int id;
+        try { id = Convert.ToInt32(msg["id"]); } catch { return; }
         string type = Convert.ToString(msg["type"]);
+
+        // 主浏览器里加载的外部网页同样能 postMessage；若不加校验，任意远程页面
+        // 都能读取配置里的密钥、拉起本地进程。这里只信任本机后端托管的页面。
+        string src = "";
+        try { src = e.Source == null ? "" : e.Source; } catch { }
+        if (src.Length == 0)
+        {
+            try { src = view.Source == null ? "" : view.Source.AbsoluteUri; } catch { }
+        }
+        if (string.IsNullOrEmpty(Origin) || !src.StartsWith(Origin + "/", StringComparison.OrdinalIgnoreCase))
+        {
+            Log("!! 拒绝非本机页面消息: " + (src.Length > 0 ? src : "(未知来源)") + " type=" + type);
+            return;
+        }
+
         var p = msg.ContainsKey("payload") ? AsDict(msg["payload"]) : null;
 
         CurrentMsg = type;   // 看门狗据此判断 UI 卡死时正卡在哪个消息分支
@@ -1849,7 +2075,7 @@ static class Host
                     {
                         var cur = ReadConfig();
                         if (p != null) foreach (var kv in p) cur[kv.Key] = kv.Value;
-                        File.WriteAllText(ConfigPath, Js.Serialize(cur), new UTF8Encoding(false));
+                        WriteTextAtomic(ConfigPath, Js.Serialize(cur));
                         Reply(view, id, cur);
                         break;
                     }
@@ -1897,13 +2123,20 @@ static class Host
 
                 case "vision:once":
                     {
-                        long h0;
-                        string durl = CaptureCleanDataUrl(out h0);
-                        if (string.IsNullOrEmpty(durl)) { ReplyError(view, id, "截屏失败"); break; }
-                        LastHash = h0;
-                        LastCallUtc = DateTime.UtcNow;
-                        RecognizeOnce(durl);
-                        Reply(view, id, true);
+                        // CaptureCleanDataUrl 在旧系统上会 DoEvents 泵消息，可能在此处重入同一条消息
+                        if (VisionOnceBusy) { ReplyError(view, id, "正在截屏，请稍候"); break; }
+                        VisionOnceBusy = true;
+                        try
+                        {
+                            long h0;
+                            string durl = CaptureCleanDataUrl(out h0);
+                            if (string.IsNullOrEmpty(durl)) { ReplyError(view, id, "截屏失败"); break; }
+                            LastHash = h0;
+                            LastCallUtc = DateTime.UtcNow;
+                            RecognizeOnce(durl);
+                            Reply(view, id, true);
+                        }
+                        finally { VisionOnceBusy = false; }
                         break;
                     }
                 case "vision:start": StartVision(); Reply(view, id, true); break;
@@ -1972,7 +2205,17 @@ static class Host
                     {
                         string url = Str(p, "url");
                         if (url.Length == 0) url = Convert.ToString(msg["payload"]);
-                        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                        // 只放行明确的外部链接/文件链接：直接 Process.Start 一个裸路径
+                        // 会执行本地程序（例如 C:\Windows\System32\cmd.exe）。
+                        Uri target;
+                        if (!Uri.TryCreate(url, UriKind.Absolute, out target)
+                            || !(target.Scheme == "http" || target.Scheme == "https"
+                                 || target.Scheme == "mailto" || target.Scheme == "file"))
+                        {
+                            ReplyError(view, id, "不支持的链接：" + url);
+                            break;
+                        }
+                        Process.Start(new ProcessStartInfo(target.AbsoluteUri) { UseShellExecute = true });
                         Reply(view, id, true);
                         break;
                     }

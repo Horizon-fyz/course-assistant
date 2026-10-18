@@ -4,8 +4,8 @@
 // 浏览器一关就丢，导致「登录一次长期有效」失效。这里登录后显式把关键 Cookie
 // 重新写回带远未来过期时间的持久 Cookie，重启浏览器也不会丢。
 import { chromium } from 'playwright';
-import { connect } from '../src/browser.mjs';
-import { ensureLoggedIn, loadAccount, checkLogin } from '../src/login-flow.mjs';
+import { connect } from '../src/core/browser.mjs';
+import { ensureLoggedIn, loadAccount, checkLogin } from '../src/core/login-flow.mjs';
 
 const KEEP_DAYS = 30;
 const KEY_RE = /SESSION|CASTGC|jt-cas|polymas-token|JSESSIONID|INGRESSCOOKIE|route-ingress|SERVERID|ai-poly|o_session_id|CASLOGC/i;

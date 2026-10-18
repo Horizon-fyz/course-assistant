@@ -15,8 +15,8 @@
 //
 // 只读诊断：除临时浮层探针外，不改页面数据、不提交任何表单。
 
-import { connect, readyPage, HOME } from '../src/browser.mjs';
-import { humanType } from '../src/login-flow.mjs';
+import { connect, readyPage, HOME } from '../src/core/browser.mjs';
+import { humanType } from '../src/core/login-flow.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rand = (a, b) => a + Math.random() * (b - a);

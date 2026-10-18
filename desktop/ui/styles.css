@@ -1,5 +1,5 @@
 /* ============================================================================
- * desktop/ui/styles.css —— 智慧树助手 UI 规范（见项目根 DESIGN.md）
+ * desktop/ui/styles.css —— 智慧树助手 UI 规范（见 docs/DESIGN.md）
  *
  * 设计语言：Linear（awesome-design-md / linear.app）
  *   · 层级靠「表面阶梯 + 1px 发丝边框」，不靠阴影
@@ -237,7 +237,8 @@ label.field {
   font: 500 13px/1.5 var(--font);
   color: var(--text-secondary);
 }
-label.field input {
+label.field input,
+label.field select {
   width: 100%;
   margin-top: 6px;
   padding: 8px 12px;
@@ -248,8 +249,10 @@ label.field input {
   font: 400 14px/1.5 var(--font);
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
+label.field select { cursor: pointer; }
 label.field input::placeholder { color: var(--text-disabled); }
-label.field input:focus {
+label.field input:focus,
+label.field select:focus {
   outline: none;
   border-color: var(--border-focus);
   box-shadow: var(--ring);

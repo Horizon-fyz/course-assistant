@@ -3,12 +3,111 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 
 static class Launcher
 {
+    // Windows 命令行参数转义：反斜杠只在引号前加倍，参数末尾的反斜杠在闭合引号前加倍
     static string Quote(string s)
     {
-        return "\"" + s.Replace("\"", "\\\"") + "\"";
+        s = s ?? "";
+        bool need = s.Length == 0;
+        foreach (char c in s)
+        {
+            if (c == ' ' || c == '\t' || c == '"' || c == '\n' || c == '\v') { need = true; break; }
+        }
+        if (!need) return s;
+
+        var sb = new StringBuilder("\"");
+        int backslashes = 0;
+        foreach (char c in s)
+        {
+            if (c == '\\') { backslashes++; continue; }
+            if (c == '"')
+            {
+                sb.Append('\\', backslashes * 2 + 1);
+                sb.Append('"');
+                backslashes = 0;
+                continue;
+            }
+            sb.Append('\\', backslashes);
+            backslashes = 0;
+            sb.Append(c);
+        }
+        sb.Append('\\', backslashes * 2);
+        sb.Append('"');
+        return sb.ToString();
+    }
+
+    /* Job Object：启动器被关闭（含点 × 结束控制台）时，系统一并结束 node 子进程树 */
+    const int JobObjectExtendedLimitInformation = 9;
+    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+
+    [DllImport("kernel32.dll")]
+    static extern bool SetInformationJobObject(IntPtr hJob, int infoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
+
+    [DllImport("kernel32.dll")]
+    static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr hObject);
+
+    static IntPtr CreateKillOnCloseJob()
+    {
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) return IntPtr.Zero;
+
+        var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        int len = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+        IntPtr buf = Marshal.AllocHGlobal(len);
+        try
+        {
+            Marshal.StructureToPtr(info, buf, false);
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, buf, (uint)len);
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+        return job;
     }
 
     static string FindNode(string dir)
@@ -101,10 +200,13 @@ static class Launcher
         psi.UseShellExecute = false;
 
         int code;
+        IntPtr job = IntPtr.Zero;
         try
         {
+            job = CreateKillOnCloseJob();
             using (Process p = Process.Start(psi))
             {
+                if (job != IntPtr.Zero) AssignProcessToJobObject(job, p.Handle);
                 p.WaitForExit();
                 code = p.ExitCode;
             }
@@ -115,6 +217,10 @@ static class Launcher
             Console.WriteLine("[错误] 启动失败：" + e.Message);
             Pause();
             return 1;
+        }
+        finally
+        {
+            if (job != IntPtr.Zero) CloseHandle(job);
         }
 
         Console.WriteLine();

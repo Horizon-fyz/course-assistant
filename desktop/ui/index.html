@@ -98,35 +98,45 @@
     <!-- 设置 -->
     <section class="pane" id="pane-settings">
       <div class="card">
-        <h2>识别模型（通义千问 VL）</h2>
-        <p class="muted">仅负责识别截图中的题干、题型与选项，不作答。默认已内置 qwen3-vl（DashScope 兼容模式）。</p>
+        <h2>识别模型（视觉识题）</h2>
+        <p class="muted">仅负责识别截图中的题干、题型与选项，不作答。支持任意 OpenAI 兼容接口，选择厂商会自动填好请求地址与常用模型 ID。</p>
         <div class="grid mt-md">
+          <label class="field">厂商预设
+            <select id="cfg-vision-provider"></select>
+          </label>
           <label class="field">接口地址 baseUrl
             <input id="cfg-vision-baseUrl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
           </label>
           <label class="field">模型 model
-            <input id="cfg-vision-model" placeholder="qwen3-vl-plus" />
+            <input id="cfg-vision-model" list="cfg-vision-models" placeholder="qwen3-vl-plus" />
+            <datalist id="cfg-vision-models"></datalist>
           </label>
           <label class="field">密钥 apiKey
             <input id="cfg-vision-apiKey" type="password" placeholder="sk-..." />
           </label>
         </div>
+        <p class="muted mt-xs" id="cfg-vision-hint"></p>
       </div>
 
       <div class="card">
-        <h2>思考模型（DeepSeek）</h2>
-        <p class="muted">依据识别出的题目文本推理出答案。默认已内置 deepseek-reasoner（DeepSeek 官方思考模型，先推理再作答）。</p>
+        <h2>思考模型（文本推理）</h2>
+        <p class="muted">依据识别出的题目文本推理出答案。支持任意 OpenAI 兼容接口，选择厂商会自动填好请求地址与常用模型 ID。</p>
         <div class="grid mt-md">
+          <label class="field">厂商预设
+            <select id="cfg-reason-provider"></select>
+          </label>
           <label class="field">接口地址 baseUrl
             <input id="cfg-reason-baseUrl" placeholder="https://api.deepseek.com/v1" />
           </label>
           <label class="field">模型 model
-            <input id="cfg-reason-model" placeholder="deepseek-reasoner" />
+            <input id="cfg-reason-model" list="cfg-reason-models" placeholder="deepseek-reasoner" />
+            <datalist id="cfg-reason-models"></datalist>
           </label>
           <label class="field">密钥 apiKey
             <input id="cfg-reason-apiKey" type="password" placeholder="sk-..." />
           </label>
         </div>
+        <p class="muted mt-xs" id="cfg-reason-hint"></p>
       </div>
 
       <div class="card">

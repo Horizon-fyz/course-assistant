@@ -17,7 +17,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { connect, readyPage, tidy, HOME, listAvailableBrowsers } from './src/browser.mjs';
+import { connect, readyPage, tidy, HOME, listAvailableBrowsers } from './src/core/browser.mjs';
+import { DATA_DIR } from './src/core/store.mjs';
 
 const ROOT = import.meta.dirname ?? dirname(fileURLToPath(import.meta.url));
 process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || join(ROOT, 'ms-playwright');
@@ -81,8 +82,10 @@ const RETRIES = Math.max(0, Number(getArg('--retries', '1')) || 1);
 
 const ANSWER_REPORT = join(ROOT, 'recon', 'apply', 'auto-answer-report.json');
 const WATCH_REPORT = join(ROOT, 'recon', 'apply', 'watch-report.json');
-const PAPERS = join(ROOT, 'export', 'papers.json');
-const COURSES = join(ROOT, 'export', 'courses-resolved.json');
+const PAPERS = join(DATA_DIR, 'papers.json');
+const COURSES = join(DATA_DIR, 'courses-resolved.json');
+/** 题库数据超过这个时长就重新抓取，避免拿几个月前的旧题去答新作业 */
+const DATA_MAX_AGE_MS = Math.max(1, Number(getArg('--data-max-age', '24')) || 24) * 3600_000;
 
 /* ───────── 输出 ───────── */
 const C = process.stdout.isTTY
@@ -205,8 +208,16 @@ function countKeys(file) {
   return j && typeof j === 'object' ? Object.keys(j).length : 0;
 }
 
+function fileState(file) {
+  if (!existsSync(file)) return { ok: false, reason: 'missing' };
+  let at;
+  try { at = statSync(file).mtimeMs; } catch { return { ok: false, reason: 'unreadable' }; }
+  if (Date.now() - at > DATA_MAX_AGE_MS) return { ok: false, reason: 'stale', at };
+  return { ok: countKeys(file) > 0, reason: 'empty' };
+}
+
 function dataState() {
-  return { answer: countKeys(PAPERS) > 0, watch: countKeys(COURSES) > 0 };
+  return { answer: fileState(PAPERS), watch: fileState(COURSES) };
 }
 
 /* ───────── 答题 ───────── */
@@ -219,7 +230,7 @@ async function stageHomework() {
   for (let attempt = 1; attempt <= max; attempt++) {
     if (attempt > 1) info(`10 秒后重新检查未提交作业（第 ${attempt} 次）……`);
     const t0 = Date.now();
-    const code = runNode('src/auto-homework.mjs', [...browserArgs(), '--force']);
+    const code = runNode('src/flows/auto-homework.mjs', [...browserArgs(), '--force']);
     const rep = readFresh(ANSWER_REPORT, t0);
     if (!rep || rep.finished !== true) {
       const why = rep ? '答题脚本未正常结束（报告不完整）' : '答题脚本未产出报告';
@@ -278,7 +289,7 @@ async function stageWatch() {
   for (let attempt = 1; attempt <= max; attempt++) {
     if (attempt > 1) info(`20 秒后重试（第 ${attempt} 次，已看完的课节会自动跳过）……`);
     const t0 = Date.now();
-    const code = runNode('src/watch-course.mjs', browserArgs());
+    const code = runNode('src/flows/watch-course.mjs', browserArgs());
     const rep = readFresh(WATCH_REPORT, t0);
     const s = summarizeWatch(rep);
 
@@ -338,30 +349,35 @@ if (!login.ok) {
 
 head('第 2 步 · 检查题库数据');
 let data = dataState();
-if ((DO_HOMEWORK && !data.answer) || (DO_WATCH && !data.watch)) {
-  warn('题库数据缺失，先自动抓取一次（可能需要几分钟）……');
+const staleNote = (st) => st.reason === 'stale'
+  ? `已超过 ${Math.round(DATA_MAX_AGE_MS / 3600_000)} 小时未更新`
+  : st.reason === 'missing' ? '文件不存在' : '内容为空';
+if ((DO_HOMEWORK && !data.answer.ok) || (DO_WATCH && !data.watch.ok)) {
+  warn('题库数据缺失或过期，先自动抓取一次（可能需要几分钟）……');
+  if (DO_HOMEWORK && !data.answer.ok) info(`· 作业数据：${staleNote(data.answer)}`);
+  if (DO_WATCH && !data.watch.ok) info(`· 课程数据：${staleNote(data.watch)}`);
   const code = runNode('zhs.mjs', ['fetch', ...browserArgs()]);
   if (code !== 0) warn(`抓取退出码 ${code}`);
   data = dataState();
 }
-if (DO_HOMEWORK && data.answer) good('作业数据就绪');
-if (DO_WATCH && data.watch) good('课程数据就绪');
-if (DO_HOMEWORK && !data.answer) bad('缺少 export\\papers.json，答题阶段跳过');
-if (DO_WATCH && !data.watch) bad('缺少 export\\courses-resolved.json，看课阶段跳过');
+if (DO_HOMEWORK && data.answer.ok) good('作业数据就绪');
+if (DO_WATCH && data.watch.ok) good('课程数据就绪');
+if (DO_HOMEWORK && !data.answer.ok) bad('缺少可用的 papers.json，答题阶段跳过');
+if (DO_WATCH && !data.watch.ok) bad('缺少可用的 courses-resolved.json，看课阶段跳过');
 
 let hw = { ok: true, skipped: true, note: '已跳过' };
 if (DO_HOMEWORK) {
-  hw = data.answer
+  hw = data.answer.ok
     ? await stageHomework()
-    : { ok: false, skipped: false, note: '缺少 export\\papers.json' };
+    : { ok: false, skipped: false, note: '没有可用的 papers.json' };
 } else {
   info('按参数要求跳过答题');
 }
 
 let watch = { ok: true, skipped: true, note: '已跳过' };
 if (DO_WATCH) {
-  if (!data.watch) {
-    watch = { ok: false, skipped: false, note: '缺少 export\\courses-resolved.json' };
+  if (!data.watch.ok) {
+    watch = { ok: false, skipped: false, note: '没有可用的 courses-resolved.json' };
   } else {
     head('检查登录状态');
     const again = await ensureLogin();

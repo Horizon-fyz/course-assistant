@@ -7,21 +7,21 @@
 
 | 模块 | 导出 | 用途 |
 |---|---|---|
-| `src/browser.mjs` | `HOME` `findChromium` `cdpAlive` `findLiveCdp` `ensureChromium` `connect` `findPage` `readyPage` `tidy` `focusWindow` `waitContent` | 浏览器抽象层（Edge CDP / Firefox 持久化 profile） |
-| `src/login-flow.mjs` | `LOGIN_URL` `API_USERINFO` `loadAccount` `checkLogin` `captchaVisible` `fillLoginForm` `ensureLoggedIn` | 登录公共逻辑（学校下拉框等易错点集中在此） |
-| `src/accounts.mjs` | `STORE` `LEGACY` `FIELD_ALIASES` `normalizeAccount` `resolveAccount` `saveAccount` `importAccount` `exportAccount` `harden` `mask` `fieldHelp` | 凭据解析：多来源、字段别名归一、导入导出、权限收紧 |
-| `src/prompt.mjs` | `askLine` `askSecret` | 交互式读取输入（TTY 隐藏回显；管道可用） |
-| `src/session.mjs` | `ensureSession` | 一次性会话体检：校验登录态 + 存 Cookie/storageState |
-| `src/python.mjs` | `PY` | 探测到的 python 解释器路径 |
+| `src/core/browser.mjs` | `HOME` `findChromium` `cdpAlive` `findLiveCdp` `ensureChromium` `connect` `findPage` `readyPage` `tidy` `focusWindow` `waitContent` | 浏览器抽象层（Edge CDP / Firefox 持久化 profile） |
+| `src/core/login-flow.mjs` | `LOGIN_URL` `API_USERINFO` `loadAccount` `checkLogin` `captchaVisible` `fillLoginForm` `ensureLoggedIn` | 登录公共逻辑（学校下拉框等易错点集中在此） |
+| `src/core/accounts.mjs` | `STORE` `LEGACY` `FIELD_ALIASES` `normalizeAccount` `resolveAccount` `saveAccount` `importAccount` `exportAccount` `harden` `mask` `fieldHelp` | 凭据解析：多来源、字段别名归一、导入导出、权限收紧 |
+| `src/core/prompt.mjs` | `askLine` `askSecret` | 交互式读取输入（TTY 隐藏回显；管道可用） |
+| `src/flows/session.mjs` | `ensureSession` | 一次性会话体检：校验登录态 + 存 Cookie/storageState |
+| `src/core/python.mjs` | `PY` | 探测到的 python 解释器路径 |
 
 ---
 
-## `src/browser.mjs`
+## `src/core/browser.mjs`
 
 ### 常量
 
 ```js
-import { HOME } from './src/browser.mjs';
+import { HOME } from './src/core/browser.mjs';
 // HOME = 'https://onlineweb.zhihuishu.com/onlinestuh5'   学生端首页
 ```
 
@@ -81,7 +81,7 @@ import { HOME } from './src/browser.mjs';
 - **抛错**：`prefer='chromium'` 且没有存活的 CDP 时抛错（提示先跑 `start-browser.ps1` 或用 firefox 模式）
 
 ```js
-import { connect } from './src/browser.mjs';
+import { connect } from './src/core/browser.mjs';
 const { ctx, describe, close } = await connect();
 console.log(describe);
 // …用 ctx 干活…
@@ -128,7 +128,7 @@ await close();
 
 ---
 
-## `src/login-flow.mjs`
+## `src/core/login-flow.mjs`
 
 ### 常量
 
@@ -139,9 +139,9 @@ export const API_USERINFO = 'https://onlineservice-api.zhihuishu.com/gateway/f/v
 
 ### `loadAccount()`
 
-按优先级读凭据：`config/account-live.json` → `config/account.json`。
+按 `src/core/accounts.mjs#resolveAccount()` 的优先级读凭据（高 → 低）：命令行 → 环境变量 → `--account <path>` → `config/credentials.json` → 旧文件 `config/account-live.json` / `config/account.json`。
 
-- **返回**：`{ file, ...凭据字段 } | null`（`file` 是实际读到的文件名）
+- **返回**：`{ file, ...凭据字段 } | null`（`file` 是实际命中的来源文件；来源为命令行/环境变量时返回占位文本）
 - **副作用**：无（读文件；文件不可读时静默跳过）
 
 ### `checkLogin(page)`
@@ -186,8 +186,8 @@ export const API_USERINFO = 'https://onlineservice-api.zhihuishu.com/gateway/f/v
 - **返回**：`Promise<{ code, user }>`；`code === 200` 表示成功，`code === -1` 表示等待超时
 
 ```js
-import { connect } from './src/browser.mjs';
-import { ensureLoggedIn, loadAccount } from './src/login-flow.mjs';
+import { connect } from './src/core/browser.mjs';
+import { ensureLoggedIn, loadAccount } from './src/core/login-flow.mjs';
 
 const { ctx, close } = await connect();
 const page = ctx.pages()[0] ?? await ctx.newPage();
@@ -199,7 +199,7 @@ await close();
 
 ---
 
-## `src/accounts.mjs`
+## `src/core/accounts.mjs`
 
 凭据解析的核心。**这是"个人信息可自定义输入"的实现所在**，详见 [`CREDENTIALS.md`](CREDENTIALS.md)。
 
@@ -256,7 +256,7 @@ export const FIELD_ALIASES; // { school: [...别名], studentId: [...], realName
 导出到指定文件 / 收紧权限 / 掩码显示（`L*********`）/ 打印别名速查表。
 
 ```js
-import { resolveAccount, mask } from './src/accounts.mjs';
+import { resolveAccount, mask } from './src/core/accounts.mjs';
 
 const r = resolveAccount({ argv: process.argv.slice(2) });
 if (!r.complete) {
@@ -268,7 +268,7 @@ console.log(r.acc.school, r.acc.studentId, mask(r.acc.password), '来源:', r.so
 
 ---
 
-## `src/prompt.mjs`
+## `src/core/prompt.mjs`
 
 交互式读取输入。写它是因为 PowerShell 的 `Read-Host` **读不了管道输入**，脚本化场景会卡死。
 
@@ -289,7 +289,7 @@ console.log(r.acc.school, r.acc.studentId, mask(r.acc.password), '来源:', r.so
 > **实现注意（踩过的坑）**：两个函数共用同一个内部 readline 读取器和行队列。**不要每个问题都 new 一个 readline 接口** —— 每次 `close()` 都会把 stdin 置为 paused，下一个接口就再也收不到数据，表现为"只有第一个提示能输入，之后卡死"并触发 `Detected unsettled top-level await`。
 
 ```js
-import { askLine, askSecret } from './src/prompt.mjs';
+import { askLine, askSecret } from './src/core/prompt.mjs';
 
 const school = await askLine('学校: ');
 const password = await askSecret('密码: ');
@@ -297,7 +297,7 @@ const password = await askSecret('密码: ');
 
 ---
 
-## `src/session.mjs`
+## `src/flows/session.mjs`
 
 ### `ensureSession()`
 
@@ -317,11 +317,11 @@ const password = await askSecret('密码: ');
 
 - **副作用**：写 `session/cookies.json`、`session/storage-state.json`；**关闭浏览器连接**、收拾标签页
 
-> 该模块也可直接执行：`node src/session.mjs`，输出 JSON，退出码 `0`/`1`。
+> 该模块也可直接执行：`node src/flows/session.mjs`，输出 JSON，退出码 `0`/`1`。
 
 ---
 
-## `src/python.mjs`
+## `src/core/python.mjs`
 
 ```js
 export const PY;   // 探测到的 python 解释器绝对路径；探测不到时为 'python'
@@ -350,7 +350,7 @@ https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework/<r
 
 其中 `5371` 是示例大学的 schoolId；其它学校需替换。
 
-**签名机制**：`secretStr` 是三层签名（`secret` + 时间戳 + 固定盐）的结果，**不能跨接口复用**——课程列表、章节视频各有各的 `secretStr`，即使参数相同也会返回 `code 421 该账号无权限`。详见 [`../SITE-REPORT.md`](../SITE-REPORT.md)。
+**签名机制**：`secretStr` 是三层签名（`secret` + 时间戳 + 固定盐）的结果，**不能跨接口复用**——课程列表、章节视频各有各的 `secretStr`，即使参数相同也会返回 `code 421 该账号无权限`。详见 [`SITE-REPORT.md`](SITE-REPORT.md)。
 
 ---
 

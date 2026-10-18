@@ -82,7 +82,7 @@ button.primary { background: var(--primary); border-color: var(--primary); }
 button.primary:hover:not(:disabled) { background: var(--primary-hover); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-input[type="text"], input[type="password"], input[type="number"], input:not([type]), textarea {
+input[type="text"], input[type="password"], input[type="number"], input:not([type]), select, textarea {
   width: 100%;
   background: var(--card-2);
   color: var(--text);
@@ -92,6 +92,7 @@ input[type="text"], input[type="password"], input[type="number"], input:not([typ
   font: inherit;
   margin-top: 4px;
 }
+select { cursor: pointer; }
 textarea { resize: vertical; font-family: Consolas, "Courier New", monospace; font-size: 13px; }
 
 .grid {

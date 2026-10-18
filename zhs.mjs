@@ -8,6 +8,9 @@
 //    node zhs.mjs doctor              环境与登录态自检（先跑这个）
 //    node zhs.mjs all                 全流程：抓题 + 生成全部格式 + 自检 + AI 作答
 //    node zhs.mjs answer              全自动作业答题（自动提交）
+//    node zhs.mjs patrol              巡检作业：新作业 / 临近截止 / 状态变化 + 通知
+//    node zhs.mjs deadline            作业截止看板（生成本地 HTML）
+//    node zhs.mjs schedule            查看定时巡检计划任务
 //    node zhs.mjs watch               全自动看课（1.5x + 自动弹题）
 //    node zhs.mjs auto                全自动：先答题再看课
 //    node zhs.mjs login               登录并固化会话（重启不丢）
@@ -22,6 +25,10 @@
 //    node zhs.mjs fetch --dry-run                 只发现课程，不抓题
 //    node zhs.mjs all  --formats md,pdf           只产出指定格式
 //    node zhs.mjs docs --out D:\题库              产物输出到别处
+//    node zhs.mjs patrol --within 24              24 小时内截止的作业重点提醒
+//    node zhs.mjs patrol --offline                不开浏览器，只按本地数据巡检
+//    node zhs.mjs deadline --open                 生成截止看板并直接用浏览器打开
+//    node zhs.mjs schedule install --time 08:00   每天 08:00 自动巡检
 //
 //  退出码：0 成功 / 1 出错 / 2 未登录 / 3 校验不通过
 // ═══════════════════════════════════════════════════════════════════
@@ -29,11 +36,12 @@ import { existsSync, readFileSync, readdirSync, mkdirSync, statSync } from 'node
 import { join, resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import * as ACC from './src/accounts.mjs';
-import { askLine, askSecret } from './src/prompt.mjs';
+import * as ACC from './src/core/accounts.mjs';
+import { askLine, askSecret } from './src/core/prompt.mjs';
+import { DATA_DIR } from './src/core/store.mjs';
 
 const ROOT = join(import.meta.dirname ?? dirname(fileURLToPath(import.meta.url)), '.');
-const EXPORT = join(ROOT, 'export');
+const EXPORT = DATA_DIR;
 
 // ---------- 输出小工具 ----------
 const C = process.stdout.isTTY
@@ -63,8 +71,9 @@ const flag = (n, d = null) => (flags[n] === undefined ? d : flags[n]);
 const has = (n) => flags[n] !== undefined && flags[n] !== false;
 
 // 输出目录可重定向（--out）：所有产物写到该目录，读取仍以 export 为准
-const OUTDIR = flag('out') ? resolve(flag('out')) : EXPORT;
-if (OUTDIR !== EXPORT) mkdirSync(OUTDIR, { recursive: true });
+const outFlag = flag('out');
+const OUTDIR = typeof outFlag === 'string' ? resolve(outFlag) : EXPORT;
+mkdirSync(OUTDIR, { recursive: true });
 const o = (name) => join(OUTDIR, name);
 
 const FILES = {
@@ -75,6 +84,7 @@ const FILES = {
   docx: o('智慧树作业题库_打印版.docx'),
   pdf: o('智慧树作业题库_打印版.pdf'),
   html: o('智慧树作业题库_打印预览.html'),
+  board: join(EXPORT, 'deadline-board.html'),
   xlsx: o('智慧树课程数据.xlsx'),
   answers: o('智慧树作业题库_打印版.answers.md'),
   answered: o('智慧树作业题库_打印版.answered.md'),
@@ -82,10 +92,11 @@ const FILES = {
 };
 
 const PY = process.env.ZHS_PYTHON || (() => {
-  const cand = [
-    join(process.env.DSH_HOME || '', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'python', 'python.exe'),
-    'python',
-  ];
+  const cand = [];
+  if (process.env.DSH_HOME) {
+    cand.push(join(process.env.DSH_HOME, 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'python', 'python.exe'));
+  }
+  cand.push('python');
   return cand.find((p) => p === 'python' || existsSync(p)) ?? 'python';
 })();
 
@@ -137,12 +148,13 @@ function accountLabel() {
 
 function accountNames() {
   const r = ACC.resolveAccount({ argv: ARGV });
-  const a = r.acc;
+  const { school, studentId, realName } = r.acc;
+  const label = realName && school ? `${realName}（${school}）` : (school && studentId ? `${school} ${studentId}` : (school || studentId || ''));
   return {
-    student: a.realName || '',
-    school: a.school || '',
-    studentId: a.studentId || '',
-    label: accountLabel(),
+    student: realName || '',
+    school: school || '',
+    studentId: studentId || '',
+    label,
     complete: r.complete,
   };
 }
@@ -162,6 +174,9 @@ function cmdHelp() {
     ['docs', '只按现有数据重新生成文档'],
     ['solve', '只作答：识别题库 → 调用 AI → 输出答案'],
     ['answer', '全自动作业：进入每份未提交作业 → 作答 → 提交'],
+    ['patrol', '巡检作业：新作业 / 临近截止 / 状态变化 + 通知'],
+    ['deadline', '截止看板：按紧急程度生成可离线打开的 HTML'],
+    ['schedule', '定时巡检：安装 / 移除 / 查看 Windows 计划任务'],
     ['watch', '全自动看课：真实播放 + 1.5x + 自动弹题'],
     ['auto', '全自动：先答题，再看课'],
     ['verify', '校验产物：数据契约 + 文档完整性 + 产物清单'],
@@ -179,6 +194,16 @@ function cmdHelp() {
   say('  login --restart-check          登录后顺带验证「关掉浏览器再开仍在线」');
   say('  answer --course 国家安全教育    只做某一门课的作业');
   say('  answer --limit 3 --no-submit   只做 3 份 / 只作答不提交');
+  say('  answer --cross-check            AI 答案问两次交叉验证，存疑题不提交');
+  say('  answer --min-confidence 0.8    交叉验证的置信度门槛（默认 0.7）');
+  say('  patrol --within 24             24 小时内截止的作业重点提醒（默认 48）');
+  say('  patrol --offline --no-notify   不开浏览器、只出报告');
+  say('  patrol --webhook <url>         额外推送到飞书 / 企微 / 钉钉');
+  say('  deadline                       生成 export\\deadline-board.html');
+  say('  deadline --open                生成后直接用默认浏览器打开');
+  say('  deadline --course 国家安全      只看某一门课');
+  say('  schedule install --time 08:00  每天 08:00 自动巡检');
+  say('  schedule remove                删除定时巡检任务');
   say('  watch  --rate 1.25             看课倍速（默认 1.5，平台上限 1.5）');
   say('  watch  --minutes 120           最多跑 120 分钟');
   say('  auto   --dry                   只演练，不动页面');
@@ -210,6 +235,7 @@ function cmdStatus() {
     ['papers.json', FILES.papers], ['courses-resolved.json', FILES.courses],
     ['Markdown', FILES.md], ['纯 Markdown', FILES.mdBare],
     ['Word', FILES.docx], ['PDF', FILES.pdf], ['打印预览 HTML', FILES.html],
+    ['截止看板', FILES.board],
     ['Excel', FILES.xlsx],
     ['答案汇总（AI）', FILES.answers], ['答案回填版（AI）', FILES.answered],
   ];
@@ -290,7 +316,13 @@ function cmdLogin() {
     if (typeof v === 'string' && v) args.push('--' + k, v);
   }
   process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || join(ROOT, 'ms-playwright');
-  const res = run(node, args);
+  // 把解析后的凭据注入子进程，命令行里传的密码不会丢失
+  const childEnv = { ...process.env };
+  for (const [envKey, key] of [['ZHS_SCHOOL', 'school'], ['ZHS_STUDENT_ID', 'studentId'], ['ZHS_PASSWORD', 'password'], ['ZHS_REAL_NAME', 'realName']]) {
+    if (r.acc[key]) childEnv[envKey] = r.acc[key];
+    else delete childEnv[envKey];
+  }
+  const res = run(node, args, { env: childEnv });
   const code = res.status ?? 1;
 
   // 登录成功后回写「平台真值」到凭据库
@@ -362,14 +394,21 @@ function cmdWhoami() {
   say('');
   process.stdout.write('  查询平台真实身份… ');
   process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || join(ROOT, 'ms-playwright');
-  const probe = spawnSync(node, [join(ROOT, 'src', 'session.mjs')], { cwd: ROOT, encoding: 'utf8' });
+  const probeEnv = { ...process.env };
+  probeEnv.ZHS_BROWSER = flag('browser') === 'firefox' ? 'firefox' : 'chromium';
+  for (const [envKey, key] of [['ZHS_BROWSER_EXE', 'browser-exe'], ['ZHS_FIREFOX_PROFILE', 'firefox-profile']]) {
+    const v = flag(key);
+    if (typeof v === 'string' && v) probeEnv[envKey] = v;
+    else delete probeEnv[envKey];
+  }
+  const probe = spawnSync(node, [join(ROOT, 'src', 'flows', 'session.mjs')], { cwd: ROOT, encoding: 'utf8', env: probeEnv });
   let got = null;
   try { got = JSON.parse(probe.stdout || '{}'); } catch {}
   if (!got || !got.ok) {
     say(`${C.y}未登录或浏览器不可用${C.r}`);
     if (got?.reason) info('    ' + got.reason);
     say('    先跑：node zhs.mjs login');
-    return got && got.ok === false && got.user ? 0 : 2;
+    return 2;
   }
   ok(`已登录：${got.user?.realName}`);
   const user = got.user ?? {};
@@ -387,8 +426,8 @@ function cmdWhoami() {
 
 function cmdFetch() {
   head('抓取题库');
-  const script = join(ROOT, 'src', 'pipeline.mjs');
-  if (!existsSync(script)) { bad('缺少 src\\pipeline.mjs'); return 1; }
+  const script = join(ROOT, 'src', 'flows', 'pipeline.mjs');
+  if (!existsSync(script)) { bad('缺少 src\\flows\\pipeline.mjs'); return 1; }
   const args = [script];
   if (has('dry-run')) args.push('--dry-run');
   const course = flag('course');
@@ -411,7 +450,13 @@ function cmdFetch() {
 function cmdDocs() {
   head('生成文档');
   if (!existsSync(FILES.papers)) { bad('缺少 export\\papers.json，先跑：node zhs.mjs fetch'); return 1; }
-  const want = String(flag('formats', 'md,md-bare,docx,pdf,xlsx')).split(',').map((x) => x.trim()).filter(Boolean);
+  const KNOWN = new Set(['md', 'md-bare', 'docx', 'pdf', 'xlsx']);
+  const want = [...new Set(String(flag('formats', 'md,md-bare,docx,pdf,xlsx'))
+    .split(',').map((x) => x.trim()).filter(Boolean))];
+  const unknown = want.filter((x) => !KNOWN.has(x));
+  if (unknown.length) warn('忽略未知格式：' + unknown.join('、'));
+  const formats = want.filter((x) => KNOWN.has(x));
+  if (!formats.length) { bad('没有可生成的格式（可选：md / md-bare / docx / pdf / xlsx）'); return 1; }
   const names = accountNames();
   const results = [];
 
@@ -421,36 +466,47 @@ function cmdDocs() {
     catch (e) { say(`${C.red}异常${C.r} ${String(e).slice(0, 80)}`); results.push([name, false]); }
   };
 
-  if (want.includes('md')) step('Markdown（打印版）', () => {
-    const args = [join(ROOT, 'recon', 'make-md.mjs'), '--out', FILES.md];
+  if (formats.includes('md')) step('Markdown（打印版）', () => {
+    const args = [join(ROOT, 'recon', 'make-md.mjs'), '--src', FILES.papers, '--out', FILES.md];
     if (names.school) args.push('--school', names.school);
     if (names.student) args.push('--student', names.student);
     const r = spawnSync(node, args, { cwd: ROOT, encoding: 'utf8' });
     if (r.status !== 0) process.stderr.write(r.stderr || '');
     return r.status === 0;
   });
-  if (want.includes('md-bare')) step('Markdown（纯文本）', () => {
-    const args = [join(ROOT, 'recon', 'make-md.mjs'), '--bare', '--out', FILES.mdBare];
+  if (formats.includes('md-bare')) step('Markdown（纯文本）', () => {
+    const args = [join(ROOT, 'recon', 'make-md.mjs'), '--bare', '--src', FILES.papers, '--out', FILES.mdBare];
     if (names.student) args.push('--student', names.student);
     if (names.school) args.push('--school', names.school);
     const r = spawnSync(node, args, { cwd: ROOT, encoding: 'utf8' });
     if (r.status !== 0) process.stderr.write(r.stderr || '');
     return r.status === 0;
   });
-  if (want.includes('pdf')) step('PDF + 打印预览', () => {
+  if (formats.includes('pdf')) step('PDF + 打印预览', () => {
+    // PDF 由打印版 Markdown 渲染而来；只选 pdf 时先确保 md 存在
+    if (!existsSync(FILES.md)) {
+      const r = spawnSync(node, [join(ROOT, 'recon', 'make-md.mjs'), '--src', FILES.papers, '--out', FILES.md,
+        ...(names.school ? ['--school', names.school] : []), ...(names.student ? ['--student', names.student] : [])],
+      { cwd: ROOT, encoding: 'utf8' });
+      if (r.status !== 0) { process.stderr.write(r.stderr || ''); return false; }
+    }
     const r = spawnSync(node, [join(ROOT, 'recon', 'make-pdf.mjs'),
       '--src', FILES.md, '--html', FILES.html, '--out', FILES.pdf], { cwd: ROOT, encoding: 'utf8' });
-    return r.status === 0 ? true : (process.stderr.write(r.stderr || ''), false);
+    if (r.status !== 0) process.stderr.write(r.stderr || '');
+    return r.status === 0;
   });
-  if (want.includes('docx')) step('Word', () => {
-    const r = spawnSync(PY, [join(EXPORT, 'make-docx.py'), '--out', FILES.docx, '--account', names.label], { cwd: ROOT, encoding: 'utf8' });
+  if (formats.includes('docx')) step('Word', () => {
+    const r = spawnSync(PY, [join(ROOT, 'export', 'make-docx.py'),
+      '--src', FILES.papers, '--out', FILES.docx, '--account', names.label], { cwd: ROOT, encoding: 'utf8' });
     if (r.status !== 0) process.stderr.write((r.stderr || '') + (r.stdout || ''));
     return r.status === 0;
   });
-  if (want.includes('xlsx')) step('Excel', () => {
+  if (formats.includes('xlsx')) step('Excel', () => {
     if (!existsSync(FILES.raw)) { process.stderr.write('缺少 export\\raw.json（课程数据），跳过\n'); return false; }
-    const r = spawnSync(PY, [join(EXPORT, 'make-xlsx.py'), '--out', FILES.xlsx,
-      '--account', names.label || names.studentId, '--school', names.school], { cwd: ROOT, encoding: 'utf8' });
+    const args = [join(ROOT, 'export', 'make-xlsx.py'), '--src', FILES.raw, '--out', FILES.xlsx,
+      '--account', names.label || names.studentId];
+    if (names.school) args.push('--school', names.school);
+    const r = spawnSync(PY, args, { cwd: ROOT, encoding: 'utf8' });
     if (r.status !== 0) process.stderr.write((r.stderr || '') + (r.stdout || ''));
     return r.status === 0;
   });
@@ -458,7 +514,7 @@ function cmdDocs() {
   const failed = results.filter(([, good]) => !good);
   say('');
   if (failed.length) { warn(`${failed.length} 项失败：${failed.map(([n]) => n).join('、')}`); return 1; }
-  ok('文档已更新到 export\\');
+  ok(`文档已更新到 ${OUTDIR}`);
   return 0;
 }
 
@@ -539,7 +595,7 @@ function cmdVerify() {
     '--papers', FILES.papers, '--md', FILES.md], { cwd: ROOT, encoding: 'utf8' });
   const out = (r.stdout || '') + (r.stderr || '');
   for (const l of out.trim().split('\n')) say('  ' + l);
-  const mdOk = /全部题目与选项均已收录/.test(out);
+  const mdOk = r.status === 0;
 
   // 3) 产物齐全性
   head('产物清单');
@@ -554,7 +610,7 @@ function cmdVerify() {
   return dataOk && mdOk ? 0 : 3;
 }
 
-/** 透传参数给 src 下的自动化脚本 */
+/** 透传参数给 src 下的自动化脚本（script 为 src 内相对路径） */
 function runAutomation(script, extraArgs = ARGV.slice(1)) {
   return run(node, [join(ROOT, 'src', script), ...extraArgs], { cwd: ROOT }).status ?? 1;
 }
@@ -562,22 +618,87 @@ function runAutomation(script, extraArgs = ARGV.slice(1)) {
 function cmdAnswer() {
   head('全自动作业答题');
   info('逐个打开未提交作业 → 题库作答 → 下一题 → 暂存 → 提交');
-  return runAutomation('auto-homework.mjs');
+  return runAutomation('flows/auto-homework.mjs');
+}
+
+function cmdPatrol() {
+  head('作业巡检');
+  info('检查新作业 / 临近截止 / 状态变化，有变化时弹 Windows 通知');
+  return runAutomation('flows/patrol.mjs');
+}
+
+/** 截止看板：把本地数据渲染成 HTML，不启动浏览器 */
+function cmdDeadline() {
+  head('截止看板');
+  info('按紧急程度分组展示作业，可搜索 / 筛选课程；只读本地数据');
+  return runAutomation('flows/deadline-board.mjs');
+}
+
+/** 定时巡检：基于 Windows 计划任务（schtasks） */
+function cmdSchedule() {
+  head('定时巡检');
+  const action = (ARGV[1] && !ARGV[1].startsWith('--')) ? ARGV[1] : 'show';
+  const name = typeof flag('name') === 'string' && flag('name') ? flag('name') : 'ZHS-Patrol';
+  const RUN_CMD = join(ROOT, 'run.cmd');
+
+  if (action === 'show') {
+    const r = spawnSync('schtasks', ['/Query', '/TN', name, '/V', '/FO', 'LIST'], { encoding: 'utf8' });
+    if (r.status !== 0) {
+      warn(`未安装计划任务「${name}」`);
+      say('  安装：node zhs.mjs schedule install --time 08:00');
+      return 1;
+    }
+    const lines = (r.stdout || '').split(/\r?\n/).filter((l) => /任务名|下次运行时间|上次运行时间|上次结果|状态|要运行的任务|Task Name|Next Run Time|Last Run Time|Last Result|Status|Task To Run/i.test(l));
+    for (const l of lines) say('  ' + l.trim());
+    return 0;
+  }
+
+  if (action === 'install') {
+    const raw = typeof flag('time') === 'string' ? flag('time') : '08:00';
+    const m = /^(\d{1,2}):(\d{2})$/.exec(raw.trim());
+    const hh = m ? Number(m[1]) : NaN;
+    const mm = m ? Number(m[2]) : NaN;
+    if (!m || hh > 23 || mm > 59) { bad(`时间格式不对：${raw}（应为 HH:MM，例如 08:00）`); return 1; }
+    const time = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    const extra = ['patrol'];
+    if (typeof flag('webhook') === 'string' && flag('webhook')) extra.push('--webhook', flag('webhook'));
+    const tr = `cmd.exe /c ""${RUN_CMD}" ${extra.join(' ')}"`;
+    const r = spawnSync('schtasks', ['/Create', '/TN', name, '/SC', 'DAILY', '/ST', time, '/TR', tr, '/F'], { encoding: 'utf8' });
+    if (r.status !== 0) {
+      bad(`创建计划任务失败：${(r.stderr || r.stdout || '').trim().slice(0, 200)}`);
+      return 1;
+    }
+    ok(`已安装计划任务「${name}」：每天 ${time} 自动巡检`);
+    say(`  执行：${tr}`);
+    say(`  立即试跑：schtasks /Run /TN "${name}"`);
+    say('  查看：node zhs.mjs schedule show');
+    return 0;
+  }
+
+  if (action === 'remove' || action === 'delete') {
+    const r = spawnSync('schtasks', ['/Delete', '/TN', name, '/F'], { encoding: 'utf8' });
+    if (r.status !== 0) { warn(`没有可删除的计划任务「${name}」`); return 1; }
+    ok(`已删除计划任务「${name}」`);
+    return 0;
+  }
+
+  bad(`未知操作：${action}（可用：install / remove / show）`);
+  return 1;
 }
 
 function cmdWatch() {
   head('全自动看课');
   info('真实鼠标播放 + 1.5x + 自动处理弹题（脚本调用 play/倍速会被风控）');
-  return runAutomation('watch-course.mjs');
+  return runAutomation('flows/watch-course.mjs');
 }
 
 function cmdAuto() {
   head('全自动答题 + 看课');
-  const a = runAutomation('auto-homework.mjs');
+  const a = runAutomation('flows/auto-homework.mjs');
   if (a !== 0) {
     warn(`答题阶段退出码 ${a}，继续看课`);
   }
-  const w = runAutomation('watch-course.mjs');
+  const w = runAutomation('flows/watch-course.mjs');
   return w || a;
 }
 
@@ -598,7 +719,10 @@ function cmdAll() {
 
   head('完成');
   say('  node zhs.mjs status     查看状态');
-  return solveCode || verifyCode || docsCode || 0;
+  // 多阶段退出码合并：未登录(2) > 校验不通过(3) > 出错(1) > 成功(0)
+  const rank = (c) => (c === 2 ? 4 : c === 3 ? 3 : c === 1 ? 2 : 0);
+  return [fetchCode, docsCode, verifyCode, solveCode]
+    .reduce((worst, c) => (rank(c) > rank(worst) ? c : worst), 0);
 }
 
 // ═════════════════ 分发 ═════════════════
@@ -612,6 +736,9 @@ const COMMANDS = {
   solve: cmdSolve,
   verify: cmdVerify,
   answer: cmdAnswer,
+  patrol: cmdPatrol,
+  deadline: cmdDeadline,
+  schedule: cmdSchedule,
   watch: cmdWatch,
   auto: cmdAuto,
   all: cmdAll,

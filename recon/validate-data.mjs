@@ -81,15 +81,17 @@ function validate(value, schema, path, schemaRoot, errors) {
 }
 
 function check(label, file, schemaFile) {
-  const out = { label, file, ok: true, schemaErrors: [], ruleErrors: [], stats: {} };
+  const out = { label, file, ok: true, schemaErrors: [], ruleErrors: [], warnings: [], stats: {} };
   if (!existsSync(file)) { out.ok = false; out.schemaErrors.push(`文件不存在：${file}`); return out; }
   let data;
   try { data = JSON.parse(readFileSync(file, 'utf8')); }
   catch (e) { out.ok = false; out.schemaErrors.push('JSON 解析失败: ' + String(e).slice(0, 120)); return out; }
 
   if (schemaFile && existsSync(schemaFile)) {
-    const schema = JSON.parse(readFileSync(schemaFile, 'utf8'));
-    validate(data, schema, '$', schema, out.schemaErrors);
+    let schema = null;
+    try { schema = JSON.parse(readFileSync(schemaFile, 'utf8')); }
+    catch (e) { out.schemaErrors.push(`schema 损坏 ${schemaFile}: ${String(e.message || e).slice(0, 120)}`); }
+    if (schema) validate(data, schema, '$', schema, out.schemaErrors);
   }
   if (out.schemaErrors.length) out.ok = false;
   out.data = data;
@@ -110,9 +112,13 @@ if (papers.data) {
     for (const it of items) {
       hw++;
       if (!it.paper) { noPaper++; papers.ruleErrors.push(`${course}/${it.examName}: 未抓到试卷（paper 为空）`); }
-      if (!(it.state === 1 && it.backNum === 3 && it.score === null)) {
+      // 旧数据可能没有 state/backNum/score 字段，缺字段只提示，不误判为已提交
+      const hasState = it.state !== undefined && it.backNum !== undefined && it.score !== undefined;
+      if (hasState && !(it.state === 1 && it.backNum === 3 && it.score === null)) {
         submitted++;
         papers.ruleErrors.push(`${course}/${it.examName}: 疑似已提交/已消耗（state=${it.state} backNum=${it.backNum} score=${it.score}）`);
+      } else if (!hasState) {
+        papers.warnings.push(`${course}/${it.examName}: 缺少 state/backNum/score，跳过提交状态判断`);
       }
       const qs = (it.paper?.rt?.examBase?.workExamParts ?? []).flatMap((p) => p.questionDtos ?? []);
       if (!qs.length && it.paper) { emptyQ++; papers.ruleErrors.push(`${course}/${it.examName}: 试卷里没有题目`); }
@@ -122,7 +128,10 @@ if (papers.data) {
         typeCount.set(t, (typeCount.get(t) ?? 0) + 1);
         const n = (que.questionOptions ?? []).length;
         opt += n;
-        if (n === 0) papers.ruleErrors.push(`${course}/${it.examName}: 题目无选项 —— ${String(que.name).slice(0, 40)}`);
+        // 只有选择题/判断题才必须有选项；填空题、简答题本来就没有
+        if (n === 0 && /单选|多选|判断|选择|不定项/.test(t)) {
+          papers.ruleErrors.push(`${course}/${it.examName}: ${t}无选项 —— ${String(que.name).slice(0, 40)}`);
+        }
       }
     }
   }
@@ -166,6 +175,11 @@ for (const r of results) {
     console.log(`   ${C.y}规则警告 ${r.ruleErrors.length} 条：${C.r}`);
     for (const e of r.ruleErrors.slice(0, 10)) console.log('     · ' + e);
     if (r.ruleErrors.length > 10) console.log(`     …另 ${r.ruleErrors.length - 10} 条`);
+  }
+  if (r.warnings?.length) {
+    console.log(`   ${C.d}提示 ${r.warnings.length} 条：${C.r}`);
+    for (const e of r.warnings.slice(0, 5)) console.log('     · ' + e);
+    if (r.warnings.length > 5) console.log(`     …另 ${r.warnings.length - 5} 条`);
   }
   if (!r.schemaErrors.length && !r.ruleErrors.length) console.log(`   ${C.g}结构与业务规则均通过${C.r}`);
 }

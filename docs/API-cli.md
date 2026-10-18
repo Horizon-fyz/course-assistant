@@ -149,7 +149,7 @@ node zhs.mjs import --prompt [--save-to <路径>] [字段覆盖参数]
 
 ```
 $ node zhs.mjs import D:\other-system-export.json
-✓ 导入成功 → K:\网页自动学习\config\credentials.json（权限已收紧）
+✓ 导入成功 → <项目根目录>\config\credentials.json（权限已收紧）
   字段映射: 学校名称 → school，学号 → studentId，密码 → password
 ! 未识别字段（已忽略）: 备注
   写入字段: school, studentId, password
@@ -222,7 +222,7 @@ node zhs.mjs docs [--formats <列表>] [--out <目录>]
 
 **各格式失败互不影响**：逐项报告 `✓ 完成` / `失败`，最后汇总失败项。
 
-**账号信息注入**：文档封面显示的账号取自 `config/account-live.json` 的 `realName` + `school`；缺失时退回 `school + studentId`。
+**账号信息注入**：文档封面显示的名字走统一凭据解析（命令行 → 环境变量 → `--account` 文件 → `config/credentials.json` → 旧文件 `account-live.json`/`account.json`），取 `realName` + `school`；缺失时退回 `school + studentId`。
 
 ---
 
@@ -295,6 +295,185 @@ node zhs.mjs solve --mock --limit 20
 
 ---
 
+### `answer` — 全自动作业答题
+
+```
+node zhs.mjs answer [--dry] [--course <课程名>] [--exam <作业名>] [--limit N] [--no-submit]
+                    [--delay <毫秒>] [--force] [--no-ai] [--no-rethink] [--no-redo]
+                    [--attempts N] [--redo-wait <秒>] [--cross-check] [--min-confidence 0.7]
+                    [--allow-uncertain] [--browser <chromium|firefox>] [--browser-exe <路径>]
+```
+
+逐份打开「未提交」作业 → 用题库匹配作答 → 暂存 → 提交。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `--dry` | 开关 | 关 | 演练：只列出目标作业，不操作页面 |
+| `--course` | string | 全部课程 | 只处理名称包含该值的课程 |
+| `--exam` | string | 全部作业 | 只处理指定作业/试卷 |
+| `--limit` | number | `0` | 最多处理 N 份作业（`0` = 全部） |
+| `--no-submit` | 开关 | 关 | 只作答并暂存，**不点提交** |
+| `--delay` | number | `500` | 每题操作间隔毫秒（下限 `120`） |
+| `--force` | 开关 | 关 | 存在跳过项时仍继续处理 |
+| `--no-ai` | 开关 | 关 | 题库未命中时不调用 AI 兜底 |
+| `--no-rethink` | 开关 | 关 | 关闭交卷后的错题复盘 |
+| `--no-redo` | 开关 | 关 | 不自动重做错题 |
+| `--attempts` | number | `2` | 错题重做最多轮数 |
+| `--redo-wait` | number | `90` | 重做前等待秒数 |
+| `--cross-check` | 开关 | 关 | AI 答案问两次做交叉验证；两次不一致或置信度低于门槛的题标记「存疑」 |
+| `--min-confidence` | number | `0.7` | 交叉验证的置信度门槛（`0~1`），仅 `--cross-check` 时生效 |
+| `--allow-uncertain` | 开关 | 关 | 存在存疑题时仍然提交（默认只作答不提交） |
+| `--browser` | enum | `chromium` | 使用哪个浏览器 |
+| `--browser-exe` | path | — | 直接指定浏览器可执行文件 |
+
+| 项 | 说明 |
+|---|---|
+| 前置条件 | `export/papers.json` 与 `export/courses-resolved.json` 存在（先跑 `fetch`） |
+| 产出文件 | `recon/apply/auto-answer-report.json`（逐份结果）、`recon/apply/submitted.json`（本地已提交台账，重复运行会跳过）；开启 `--cross-check` 且存在存疑题时另写 `recon/apply/uncertain-review.json` 与 `uncertain-review.md` |
+| 退出码 | `0` 全部处理完成；`1` 存在未提交或异常的作业 |
+| 副作用 | 启动/复用浏览器并**真实操作试卷页面**；默认会点提交；可能调用 AI 兜底接口；`--cross-check` 时每题调用两次 AI（费用翻倍） |
+
+> **会写平台数据**：`--dry` 只演练，`--no-submit` 只答不交。首次使用建议先 `--dry` 确认目标，再用 `--limit 1 --no-submit` 小范围验证。
+
+> **交叉验证**：`--cross-check` 会把同一道 AI 题问两次；两次答案不一致，或任一次返回的 `confidence` 低于 `--min-confidence`，即记为存疑。存疑题仍按第一次答案填页面，但**该份作业不会自动提交**，并在 `recon/apply/uncertain-review.md` 输出人工复核清单（含题库答案、页面作答、两次投票与原因）。确认无误后手动提交，或下次加 `--allow-uncertain` / `--force` 放行。
+
+---
+
+### `patrol` — 作业巡检
+
+```
+node zhs.mjs patrol [--course <课程名>] [--within 48] [--offline] [--no-notify]
+                    [--webhook <url>] [--dry] [--browser <chromium|firefox>] [--browser-exe <路径>]
+```
+
+拉取最新作业列表，与上次快照对比，识别 **新作业 / 状态变化 / 临近截止**，并弹 Windows 通知。只读，绝不提交作业。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `--course` | string | 全部课程 | 只巡检名称包含该值的课程 |
+| `--within` | number | `48` | 多少小时内截止的作业重点提醒 |
+| `--offline` | 开关 | 关 | 不打开浏览器，只用本地 `papers.json` 出报告 |
+| `--no-notify` | 开关 | 关 | 不弹 Windows 通知 |
+| `--webhook` | string | — | 额外推送到飞书 / 企微 / 钉钉机器人（按域名自动适配消息格式） |
+| `--dry` | 开关 | 关 | 只打印结果，不写报告与快照 |
+| `--browser` | enum | `chromium` | 使用哪个浏览器 |
+| `--browser-exe` | path | — | 直接指定浏览器可执行文件 |
+
+| 项 | 说明 |
+|---|---|
+| 前置条件 | `export/courses-resolved.json` 存在（先跑 `fetch`）；`--offline` 时只需 `papers.json` |
+| 产出文件 | `export/patrol-report.json`（本次结果）、`export/patrol-state.json`（历史快照，删除后下次重建基线） |
+| 退出码 | `0` 正常；`1` 有课程未取到列表；`2` 未登录 |
+| 副作用 | 启动/复用浏览器读取作业列表；弹通知或请求 Webhook；可能更新 `papers.json` 的状态字段 |
+
+首次运行只建立基线，不把存量作业全部报成「新作业」；截止提醒每天最多一次。
+
+非 `--dry` 的巡检结束时会自动刷新 `export/deadline-board.html`，无需再单独跑 `deadline`。
+
+---
+
+### `deadline` — 截止看板
+
+```
+node zhs.mjs deadline [--course <课程名>] [--out <目录>] [--open]
+```
+
+把本地 `papers.json` + `courses-resolved.json` 渲染成一份自包含 HTML：按「已过期 / 24 小时内 / 1–3 天 / 3–7 天 / 7 天以上 / 无截止」分组展示未提交作业，支持搜索、课程筛选与状态切换。只读本地数据，不启动浏览器、不访问网络、不提交作业。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `--course` | string | 全部课程 | 只看名称包含该值的课程 |
+| `--out` | path | `export/` | 产物输出目录（文件名固定为 `deadline-board.html`） |
+| `--open` | 开关 | 关 | 生成后用默认浏览器打开 |
+
+| 项 | 说明 |
+|---|---|
+| 前置条件 | `export/papers.json` 存在（先跑 `fetch`）；`courses-resolved.json` 用于生成「去作答」链接，缺失时链接为空 |
+| 产出文件 | `export/deadline-board.html` |
+| 退出码 | `0` 成功；`1` 读取数据失败 |
+| 副作用 | 只读本地 JSON，写单个 HTML 文件；`--open` 会拉起默认浏览器 |
+
+看板顶部显示数据更新时间与最近巡检时间；没有巡检记录、或最近一次巡检超过 24 小时时会显示过期提示。页内数据通过 JSON 注入并逐字段 `textContent` 渲染，作业名里的特殊字符不会破坏页面。
+
+---
+
+### `schedule` — 定时巡检
+
+```
+node zhs.mjs schedule [show|install|remove] [--time 08:00] [--name ZHS-Patrol] [--webhook <url>]
+```
+
+用 Windows 计划任务（`schtasks`）每天自动执行 `patrol`。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `<动作>` | enum | `show` | `show` 查看 / `install` 安装 / `remove` 删除 |
+| `--time` | string | `08:00` | `install` 时的每日执行时间（`HH:MM`） |
+| `--name` | string | `ZHS-Patrol` | 计划任务名 |
+| `--webhook` | string | — | `install` 时把 Webhook 地址写进巡检命令 |
+
+| 项 | 说明 |
+|---|---|
+| 产出 | 无本地文件；`show` 打印下次运行时间、上次结果与实际执行的命令 |
+| 退出码 | `0` 成功；`1` 创建/删除失败或任务不存在 |
+| 副作用 | 创建或删除 Windows 计划任务（仅 Windows） |
+
+安装后想立刻验证，可执行 `schtasks /Run /TN "ZHS-Patrol"`。
+
+---
+
+### `watch` — 全自动看课
+
+```
+node zhs.mjs watch [--dry] [--course <课程名>] [--lesson <课节>] [--from <课节>] [--max N]
+                   [--minutes N] [--rate 1.5] [--face-wait N] [--no-ai] [--no-tidy]
+                   [--browser <chromium|firefox>] [--browser-exe <路径>]
+```
+
+真实鼠标/播放器交互播放课程视频，按题库或 AI 自动处理弹题。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `--dry` | 开关 | 关 | 演练：只列出课程与课节，不播放 |
+| `--course` | string | 全部课程 | 只处理名称包含该值的课程 |
+| `--lesson` | string | 全部课节 | 只处理「序号 + 标题」包含该值的课节 |
+| `--from` | string | — | 从匹配的课节开始（含该节） |
+| `--max` | number | `0` | 每门课最多播放 N 节（`0` = 全部） |
+| `--minutes` | number | `0` | 总时长上限（分钟，`0` = 不限） |
+| `--rate` | number | `1.5` | 播放倍速，自动夹到 `1.0~1.5` |
+| `--face-wait` | number | `15` | 等待人工完成人脸识别的分钟数 |
+| `--no-ai` | 开关 | 关 | 弹题未命中题库时不调用 AI 兜底 |
+| `--no-tidy` | 开关 | 关 | 结束后不整理/关闭多余标签页 |
+| `--browser` | enum | `chromium` | 使用哪个浏览器 |
+| `--browser-exe` | path | — | 直接指定浏览器可执行文件 |
+
+| 项 | 说明 |
+|---|---|
+| 前置条件 | `export/courses-resolved.json` 存在（先跑 `fetch`） |
+| 产出文件 | `recon/apply/watch-report.json`（逐课程/课节结果） |
+| 退出码 | `0` 全部完成（`--minutes` 主动收手不算失败）；`1` 有课节未完成或课程异常 |
+| 副作用 | 启动/复用浏览器并真实播放视频；可能停在页面等待人工完成人脸识别（默认最多 15 分钟）；可能调用 AI 兜底接口 |
+
+> 脚本直接调用 `play()` 或修改倍速会被平台风控，因此本命令用真实交互播放；播放中若出现脚本告警会立即停止该课节。
+
+---
+
+### `auto` — 答题 + 看课
+
+```
+node zhs.mjs auto [answer 的参数] [watch 的参数]
+```
+
+依次执行 `answer` → `watch`。同名参数对两个阶段都生效（如 `--dry`、`--course`、`--no-ai`）。
+
+| 项 | 说明 |
+|---|---|
+| 产出文件 | 同 `answer` + `watch` |
+| 退出码 | `0` 两阶段都成功；`1` 任一阶段失败（**看课阶段的结果优先**） |
+| 副作用 | 同 `answer` + `watch`；**答题阶段失败不会中断看课** |
+
+---
+
 ### `all` — 全流程
 
 ```
@@ -360,6 +539,33 @@ fetch             # 抓取（不生成文档）
 solve                   # 调 AI 作答，产出答案汇总 + 回填版
 solve --limit 10        # 先拿 10 题试跑，确认模型答得对再全量
 solve --mock            # 不花额度，走通流程
+```
+
+**日常巡检（不提交作业）**
+
+```
+patrol                   # 开浏览器拉最新列表，有变化弹通知
+patrol --offline         # 不联网，只看本地数据
+patrol --within 24       # 只重点提醒 24 小时内截止的作业
+schedule install --time 08:00   # 每天 08:00 自动巡检
+schedule show                   # 查看下次运行时间与上次结果
+```
+
+**查看作业截止看板**
+
+```
+deadline                        # 用本地数据生成 export/deadline-board.html
+deadline --open                 # 生成后直接打开浏览器
+deadline --course 国家安全       # 只看某一门课
+patrol                          # 巡检结束会自动刷新看板
+```
+
+**答题 + 交叉验证**
+
+```
+answer --limit 1 --no-submit --cross-check          # 先小范围试跑，看复核清单
+answer --cross-check --min-confidence 0.8           # 正式跑，低置信度题不提交
+answer --cross-check --allow-uncertain              # 接受存疑题直接提交
 ```
 
 ---

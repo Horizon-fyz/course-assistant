@@ -46,7 +46,8 @@ export class AIRequestError extends Error {
 
 /**
  * @typedef {Object} AIConfig
- * @property {string} baseUrl      接口根地址，需以 /v1 结尾（不含 /chat/completions）
+ * @property {string} baseUrl      接口根地址（如 https://api.deepseek.com/v1），不含 /chat/completions；
+ *                                 误粘贴完整端点也会自动剥离
  * @property {string} apiKey       接口密钥
  * @property {string} [model]      模型名，默认 gpt-4o-mini
  * @property {number} [temperature] 采样温度，默认 0.2
@@ -67,7 +68,11 @@ export class AIRequestError extends Error {
  */
 export function createClient(config, deps = {}) {
   const fetchImpl = deps.fetch || globalThis.fetch;
-  const baseUrl = String(config.baseUrl || '').replace(/\/+$/, '');
+  const baseUrl = String(config.baseUrl || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/chat\/completions$/i, '')
+    .replace(/\/+$/, '');
   const apiKey = config.apiKey || '';
   const model = config.model || 'gpt-4o-mini';
   const timeoutMs = config.timeoutMs ?? 60000;
@@ -136,10 +141,13 @@ export function createClient(config, deps = {}) {
         return await chatOnce(messages, opts);
       } catch (e) {
         lastErr = e;
+        // fetch 的网络层错误（ECONNRESET / 断网 / DNS 失败）是 TypeError，没有 status，
+        // 旧逻辑只认 status===0，导致这类错误一次都不重试。
         const retriable = e.retryable === false ? false : (
           e.name === 'AbortError' ||
           e.status === 429 ||
           (e.status >= 500 && e.status < 600) ||
+          e.status == null ||
           e.status === 0
         );
         if (opts.signal?.aborted || !retriable || attempt === maxRetries) break;
@@ -163,40 +171,78 @@ export function createClient(config, deps = {}) {
 }
 
 /**
+ * 从 start 处的 `[` / `{` 开始，按括号配对截出完整的 JSON 文本。
+ * 必须跳过字符串内部与转义字符，否则题干里的 `]` / `}` 会提前截断；
+ * 也不能用 lastIndexOf —— 回复末尾的其它括号会把范围拉出第一个 JSON 值。
+ * @param {string} text
+ * @param {number} start
+ * @returns {string|null}
+ */
+function sliceBalanced(text, start) {
+  const open = text[start];
+  const close = open === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/** 依次尝试文本里每个 `[` / `{` 起点，返回第一个能解析成功的值 */
+function parseFirstJsonValue(text) {
+  const re = /[[{]/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const slice = sliceBalanced(text, m.index);
+    if (!slice) continue;
+    try {
+      return { found: true, value: JSON.parse(slice) };
+    } catch {
+      /* 这个起点不是合法 JSON，继续找下一个 */
+    }
+  }
+  return { found: false, value: undefined };
+}
+
+/**
  * 从模型回复中稳健地提取 JSON。
- * 容忍三种常见情况：纯 JSON、被 ```json 代码块包裹、JSON 前后夹带说明文字。
+ * 容忍四种常见情况：纯 JSON、被 ```json 代码块包裹、JSON 前后夹带说明文字、
+ * 回复里有多段代码块（只取第一个能解析出 JSON 的）。
  *
  * @param {string} text
  * @returns {any}
  * @throws {Error} 无法解析时抛出
  */
 export function extractJson(text) {
-  let t = String(text).trim();
+  const raw = String(text).trim();
 
-  // 1) 优先取代码块内容
-  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) t = fence[1].trim();
+  // 1) 代码块可能有多个，逐个尝试；纯文本作为最后的兜底
+  const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1].trim());
 
-  // 2) 直接尝试
-  try {
-    return JSON.parse(t);
-  } catch {
-    /* 继续尝试截取 */
-  }
-
-  // 3) 截取第一段花括号/方括号内容
-  const start = t.search(/[[{]/);
-  if (start >= 0) {
-    const open = t[start];
-    const close = open === '[' ? ']' : '}';
-    const end = t.lastIndexOf(close);
-    if (end > start) {
-      try {
-        return JSON.parse(t.slice(start, end + 1));
-      } catch {
-        /* 忽略 */
-      }
+  for (const candidate of [...fences, raw]) {
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      /* 继续找 JSON 片段 */
     }
+    const parsed = parseFirstJsonValue(candidate);
+    if (parsed.found) return parsed.value;
   }
-  throw new Error(`无法从模型回复中解析 JSON：${t.slice(0, 300)}`);
+
+  throw new Error(`无法从模型回复中解析 JSON：${raw.slice(0, 300)}`);
 }

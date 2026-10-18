@@ -30,7 +30,7 @@
 ## 快速开始
 
 ```powershell
-cd K:\网页自动学习
+cd /d D:\代码\网页自动学习
 
 run.cmd doctor     # 1. 环境自检（先跑这个，缺什么会直接告诉你）
 run.cmd login      # 2. 登录一次（会话会固化，浏览器重启不丢）
@@ -60,6 +60,12 @@ Windows 下也可以直接**双击 `run.cmd`** —— 会做环境自检并显�
 | `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查（默认 Edge，可换 Firefox / 任意浏览器） |
 | `run.cmd docs` | 只生成文档：Markdown（打印版 + 纯文本）、Word、PDF、打印预览 HTML、Excel |
 | `run.cmd solve` | 只作答：识别题库 → 调用 AI（OpenAI 兼容）→ 输出答案汇总 + 回填版 |
+| `run.cmd answer` | 全自动作业：逐份打开未提交作业 → 题库/AI 作答 → 暂存 → 提交（默认真提交，可用 `--no-submit` 关闭；`--cross-check` 交叉验证，存疑题不提交） |
+| `run.cmd patrol` | 作业巡检：新作业 / 状态变化 / 临近截止 → Windows 通知，可推送到飞书 / 企微 / 钉钉 |
+| `run.cmd deadline` | 截止看板：把本地作业数据生成可离线打开的 HTML，按紧急程度分组；巡检后自动刷新 |
+| `run.cmd schedule` | 定时巡检：安装 / 移除 / 查看 Windows 计划任务，每天自动跑 `patrol` |
+| `run.cmd watch` | 全自动看课：真实播放 + 1.0~1.5x 倍速 + 自动处理弹题（可能需人工完成人脸识别） |
+| `run.cmd auto` | 先 `answer` 再 `watch`；答题失败不中断看课 |
 | `run.cmd verify` | 校验产物：数据契约 + 文档完整性 + 产物清单 |
 | `run.cmd all` | 上面几步串起来：fetch → docs → verify → solve（未配 AI 时自动跳过 solve） |
 
@@ -77,6 +83,22 @@ run.cmd docs  --formats md,pdf          # 只产出指定格式
 run.cmd docs  --out D:\题库             # 产物输出到别的目录
 run.cmd solve --limit 10                # 先拿 10 题试跑作答
 run.cmd solve --mock                    # 离线走通作答流程（不调用 AI、不花钱）
+run.cmd answer --dry                    # 只列出未提交作业，不操作页面
+run.cmd answer --limit 1 --no-submit    # 小范围验证：只答 1 份且不提交
+run.cmd answer --cross-check            # AI 答案问两次交叉验证，存疑题不提交（清单见 recon/apply/uncertain-review.md）
+run.cmd answer --cross-check --min-confidence 0.8   # 更严格的置信度门槛
+run.cmd patrol                          # 巡检新作业 / 截止时间 / 状态变化
+run.cmd patrol --within 24              # 24 小时内截止的作业重点提醒
+run.cmd patrol --offline --no-notify    # 不开浏览器、弹通知，只出报告
+run.cmd patrol --webhook <机器人地址>    # 额外推送到飞书 / 企微 / 钉钉
+run.cmd deadline                        # 生成截止看板 export/deadline-board.html
+run.cmd deadline --open                 # 生成后直接打开浏览器
+run.cmd deadline --course 国家安全教育    # 只看某一门课
+run.cmd schedule install --time 08:00   # 每天 08:00 自动巡检
+run.cmd schedule show                   # 查看下次运行时间与上次结果
+run.cmd schedule remove                 # 删除定时巡检任务
+run.cmd watch --dry                     # 只列出课程与课节，不播放
+run.cmd watch --course 国家安全教育 --max 2 --rate 1.5
 run.cmd login --restart-check           # 登录后顺带验证「重启浏览器仍在线」
 ```
 
@@ -110,12 +132,44 @@ run.cmd whoami
 
 ---
 
+## 让 AI 直接操控（MCP）
+
+工具本身不内嵌浏览器，但提供了 MCP 服务器：AI 客户端可以把登录、抓题、生成文档、AI 作答、答题、巡检、看课当成工具直接调用。
+
+在支持 MCP 的客户端（Trae / Claude Desktop / Cursor）里添加一个 stdio 服务器，命令指向：
+
+```
+d:\代码\网页自动学习\mcp.cmd
+```
+
+或直接用 `node` 启动 `mcp-server.mjs`：
+
+```json
+{
+  "mcpServers": {
+    "zhihuishu": {
+      "command": "node",
+      "args": ["d:\\代码\\网页自动学习\\mcp-server.mjs"]
+    }
+  }
+}
+```
+
+- 长任务（登录 / 抓题 / 巡检 / 答题 / 看课）会返回 `jobId`，AI 用 `zhs_job` 轮询，避免超时；
+- `zhs_answer` / `zhs_watch` / `zhs_auto` 会真实写平台数据，**必须**带 `confirm=true`；
+- `zhs_patrol` 只读巡检，`zhs_schedule` 管理每日定时任务；
+- `zhs_deadline` 生成截止看板 HTML（`patrol` 结束后也会自动刷新）；
+- 完整工具清单、客户端配置与故障排查见 [`docs/API-mcp.md`](docs/API-mcp.md)。
+
+---
+
 ## 接口文档
 
 要让**别的程序或 AI** 调用，看 [`docs/`](docs/README.md)：
 
 | 文档 | 面向 |
 |---|---|
+| [`docs/API-mcp.md`](docs/API-mcp.md) | MCP 服务器：AI 客户端直接调用，工具清单、后台任务、安全确认 |
 | [`docs/API-cli.md`](docs/API-cli.md) | 命令行调用：每个命令的参数、返回值、退出码、副作用、失败处理 |
 | [`docs/API-node.md`](docs/API-node.md) | 在 JS 里复用：浏览器抽象层、登录逻辑的完整函数签名 |
 | [`docs/DATA-CONTRACT.md`](docs/DATA-CONTRACT.md) | 读产物：字段定义、取值、陷阱（选项顺序随机等） |
@@ -163,15 +217,16 @@ node recon/check-docs.mjs       # 检查文档是否与代码漂移
 
 ## 安全边界
 
-- 全程**只进入试卷读取题目**，绝不点击「提交作业」「暂存作业」；
+- `fetch` 全程**只进入试卷读取题目**，绝不点击「提交作业」「暂存作业」；
 - 抓完自动复查每份作业的 `state / backNum / score`，确认仍是未提交状态（异常会报出来）；
-- `docs` 与 `verify` 只读本地数据，不碰网络。
+- `docs` 与 `verify` 只读本地数据，不碰网络；
+- `answer` / `watch` / `auto` 是**会写平台数据**的显式命令：`answer` 默认真实提交（`--no-submit` 可关闭），`watch` 会真实播放视频；首次使用建议先 `--dry`，再用 `--limit 1 --no-submit` 验证。
 
 ---
 
 ## 配置
 
-`config\account-live.json`（**不要提交到仓库**）：
+`config\credentials.json`（**不要提交到仓库**），由 `import --prompt` / `login` 自动写入：
 
 ```json
 {
@@ -182,30 +237,84 @@ node recon/check-docs.mjs       # 检查文档是否与代码漂移
 }
 ```
 
-`realName` 会出现在文档封面上；删掉也能跑，只是封面显示「学校+学号」。
+兼容旧文件 `config\account-live.json`、`config\account.json`；也可以用 `--account <path>` 导入任意来源的 JSON（字段名会自动归一）。`realName` 会在登录后由平台真值回写，并出现在文档封面上；删掉也能跑，只是封面显示「学校+学号」。
 
 ---
 
 ## 目录结构
 
 ```
-zhs.mjs                  ← 统一入口（所有命令都从这里进）
-run.cmd                  ← Windows 启动器（自动定位 node 与浏览器运行时）
-config\account-live.json ← 账号凭据
-src\browser.mjs          ← 浏览器抽象层（Chromium 系走 CDP / Firefox 走 BiDi / 支持 --browser-exe）
-src\bidi.mjs             ← WebDriver BiDi 最小客户端（零依赖，接管系统 Firefox）
-src\browser-firefox.mjs  ← Playwright 兼容适配层（让既有代码在 Firefox 上原样跑）
-src\login-flow.mjs       ← 登录公共逻辑（学校下拉框等易错点集中在这里）
-src\pipeline.mjs         ← 抓取主流程
-recon\login-and-persist.mjs  ← 登录 + 会话固化
-recon\make-md.mjs        ← Markdown 生成器
-recon\make-pdf.mjs       ← 打印预览 HTML + PDF
-recon\verify-md.mjs      ← Markdown 完整性校验
-export\make-docx.py      ← Word 生成器
-export\make-xlsx.py      ← Excel 生成器
-export\                  ← 产物
-recon\                   ← 侦察与诊断脚本（一般不用管）
+zhs.mjs                       ← 统一入口（所有命令都从这里进）
+start.mjs / mcp-server.mjs    ← 启动器 / MCP 服务器
+run.cmd / mcp.cmd             ← Windows 启动脚本
+一键开始.cmd / 一键开始.exe    ← 双击启动（免命令行的全自动流程）
+一键打包.cmd                  ← 双击构建（调用 packaging\build-all.ps1）
+start-browser.ps1             ← 手动启动浏览器 / 登录辅助
+config\credentials.json       ← 凭据库（兼容 account-live.json / account.json）
+
+src\                          ← 生产代码（会被 build-automation.ps1 打包）
+  core\                       ← 基础设施：无业务状态
+    browser.mjs               ←   浏览器抽象层（Chromium 走 CDP / Firefox 走 BiDi / --browser-exe）
+    bidi.mjs                  ←   WebDriver BiDi 最小客户端（零依赖，接管系统 Firefox）
+    browser-firefox.mjs       ←   Playwright 兼容适配层（让既有代码在 Firefox 上原样跑）
+    login-flow.mjs            ←   登录公共逻辑（学校下拉框等易错点集中在这里）
+    accounts.mjs              ←   凭据解析与凭据库（优先级、字段别名、回写）
+    prompt.mjs / python.mjs   ←   终端输入 / Python 环境
+    store.mjs                 ←   本地数据读写（课程、作业、产物路径）
+  flows\                      ← 端到端业务流程
+    pipeline.mjs              ←   抓取主流程（fetch）
+    auto-homework.mjs         ←   全自动作业（answer）
+    answer-engine.mjs         ←   AI 作答与交叉验证
+    patrol.mjs                ←   作业巡检（patrol）
+    deadline-board.mjs        ←   截止看板（deadline）
+    watch-course.mjs          ←   全自动看课（watch）
+    session.mjs               ←   登录会话探测与固化
+  tools\                      ← 手动执行的单点工具
+    login.mjs                 ←   独立登录
+    resolve-courses.mjs       ←   解析课程与考试入口
+    launch-firefox.mjs        ←   启动并接管 Firefox
+    firefox-session.mjs       ←   读取本机 Firefox 已登录会话
+    focus.mjs                 ←   窗口置前
+    apply-homework.mjs        ←   套用答案
+
+lab\                          ← 实验与诊断脚本（不打包、不参与生产流程）
+  probes\                     ←   只读探测/采集/诊断（check-* / collect-* / probe-* / verify-*）
+  legacy\                     ←   旧实验与一次性脚本（login-cdp / test-* / fill-missing-papers 等）
+
+recon\                        ← 工程校验脚本（一般不用管）
+  check-docs.mjs              ←   文档与代码一致性检查
+  validate-data.mjs           ←   数据契约校验
+  make-md.mjs / make-pdf.mjs  ←   文档生成
+  login-and-persist.mjs       ←   登录 + 会话固化
+  archive\                    ←   历史侦察脚本（仅存档，不再维护）
+  _artifacts\                 ←   采集产物（JSON / 日志，git 忽略）
+  apply\ exam\ dialog\ ...    ←   运行期输出目录（git 忽略）
+
+export\                       ← 产物（Markdown / Word / PDF / Excel）
+  make-docx.py / make-xlsx.py ←   文档生成器
+desktop\                      ← Windows 桌面端（C# 外壳 + 本地 Web UI）
+md-ai-answer\                 ← 独立 AI 作答组件（CLI / Electron / 本地服务）
+tools\                        ← 打包用的 C# 启动器源码（launcher.cs / setup-ai.cs）
+
+packaging\                    ← 打包素材与脚本（双击 一键打包.cmd 即可，平时不用改）
+  build-all.ps1               ←   一键构建（便携版 + 安装包）
+  build-portable.ps1          ←   组装便携版 dist\智慧树助手\
+  build-installer.ps1         ←   编译并签名安装包
+  build-automation.ps1        ←   组装「一键全自动」分发包
+  sign-helper.ps1             ←   自签名代码签名公共逻辑
+  installer*.iss              ←   Inno Setup 安装包脚本
+  config.*.json               ←   分发包的空密钥配置模板
+  installer-lang\             ←   安装包简体中文语言文件
+
+docs\                         ← 设计、交接与站点侦察报告
+  DESIGN.md / HANDOFF.md      ←   设计语言与交接状态
+  SITE-REPORT.md / DOMAIN-REPORT.md ← 站点侦察与全域巡检
+  API-*.md / MULTI-PLATFORM.md ←  接口说明与多端指南
 ```
+
+分层约定：`src/` 只放生产代码；一次性的探测、试验、旧版本脚本一律进 `lab/`；
+`recon/` 根目录只保留仍在使用的工程脚本，历史脚本进 `recon/archive/`；
+打包相关脚本与素材统一放 `packaging/`，设计与报告文档统一放 `docs/`。
 
 ---
 
@@ -213,15 +322,15 @@ recon\                   ← 侦察与诊断脚本（一般不用管）
 
 1. **浏览器：抓取层已与浏览器解耦**（这是重点，不再是"只能用 Edge"）
    - **Chromium 系**（Edge / Chrome / Brave / Vivaldi / Opera / 360 / QQ / Chromium）：自动发现可执行文件 → `--remote-debugging-port` 启动 → Playwright `connectOverCDP` 接管。`navigator.webdriver=false`，能过网易易盾验证码。
-   - **Firefox**：官方构建已移除 CDP（`--remote-debugging-port` 只起 httpd.js，没有 `/json/*` 端点），改走 **WebDriver BiDi**（`src\bidi.mjs` + `src\browser-firefox.mjs`）。
+   - **Firefox**：官方构建已移除 CDP（`--remote-debugging-port` 只起 httpd.js，没有 `/json/*` 端点），改走 **WebDriver BiDi**（`src\core\bidi.mjs` + `src\core\browser-firefox.mjs`）。
      - 为什么不用 Playwright 自带 Firefox：它依赖 `-juggler-pipe` 命名管道，在受限沙箱里子进程创建被拒（`SpawnTarget 0x80070005`），浏览器随即以 `0xC0000005` 退出。
      - BiDi 下 Firefox 的 `navigator.webdriver` 默认是 `true`（WebDriver 协议要求）→ 已用 `script.addPreloadScript` 在页面脚本之前改写成 `false`，否则易盾必拦。
      - 首次用 Firefox 抓题，要在它打开的窗口里**人工登录一次**（会话落在 `browser-profile-firefox`），之后就不用再登。
      - 想直接复用它读你平时那个已登录的 Firefox：`--firefox-profile "%APPDATA%\Mozilla\Firefox\Profiles\xxxx.default-release"`，**前提是先完全退出 Firefox**（profile 被占用时无法接管）。
    - **任意其它浏览器**：`--browser-exe "<可执行文件路径>"`（按文件名自动判断：Firefox 走 BiDi，其余按 Chromium 走 CDP）。
-   - 另有 `node src\firefox-session.mjs`：不启动浏览器，直接读本机 Firefox 已登录的 Cookie 交给自动化用。
+   - 另有 `node src\tools\firefox-session.mjs`：不启动浏览器，直接读本机 Firefox 已登录的 Cookie 交给自动化用。
 
-2. **`config\account.json` 读不了**：上一轮把它的权限收紧成「仅 Administrator 全控制」，而当前用户是 `USER`（非管理员），读取/删除均被拒。因此改用 `config\account-live.json`。要恢复原文件需管理员执行
-   `icacls "K:\网页自动学习\config\account.json" /reset`
+2. **`config\account.json` 可能读不了**：它曾被收紧为「仅 Administrator 全控制」，普通用户读取会被拒。现在凭据默认写入 `config\credentials.json`，该旧文件只作兼容兜底，读不到会静默跳过。若确实要恢复它，需管理员执行
+   `icacls "D:\代码\网页自动学习\config\account.json" /reset`
 
 3. **会话失效时**：跑 `run.cmd login`。若验证码出现，Edge 窗口会停在那一页，人工完成后脚本会自动继续（最多等 8 分钟）。
