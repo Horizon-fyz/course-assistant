@@ -273,6 +273,19 @@
       "sideEffects": "启动/复用浏览器并真实播放视频；可能停在页面等待人工完成人脸识别（默认最多 15 分钟）；可能调用 AI 兜底接口"
     },
     {
+      "name": "catalog",
+      "summary": "课程目录扫描：逐课读取章节 / 课节 / 时长 / 完成状态，并可选择某一节自动观看",
+      "params": [
+        { "name": "--course", "type": "string", "required": false, "description": "只扫描名称包含该值的课程" },
+        { "name": "--watch", "type": "string", "required": false, "description": "扫描后直接自动完成指定课节（如 1.3；同名编号多门课时写「心理健康 1.3」）" },
+        { "name": "--json", "type": "boolean", "required": false, "description": "只输出目录 JSON（同时写入 export/course-catalog.json）" },
+        { "name": "--no-pick", "type": "boolean", "required": false, "description": "扫描完不进入交互选择" },
+        { "name": "--rate / --minutes / --face-wait / --no-ai / --browser ...", "type": "flags", "required": false, "description": "指定 --watch 时透传给 watch，含义一致" }
+      ],
+      "returns": { "kind": "files", "files": ["export/course-catalog.json"], "exitCode": "0 成功 / 1 扫描失败或课节无法定位" },
+      "sideEffects": "启动/复用浏览器逐个打开视频页（只读取目录，不播放）；指定 --watch 时会转去看课流程并真实播放"
+    },
+    {
       "name": "auto",
       "summary": "全自动：先跑 answer 答题，再跑 watch 看课（答题失败仍继续看课）",
       "params": [
@@ -311,7 +324,8 @@
     "export/智慧树课程数据.xlsx": { "description": "课程总览 + 章节视频明细 + 数据来源说明", "producedBy": "docs", "requires": "export/raw.json" },
     "export/patrol-report.json": { "description": "最近一次巡检结果：新作业 / 状态变化 / 临近截止", "producedBy": "patrol" },
     "export/patrol-state.json": { "description": "巡检快照：每份作业的首次/最近发现时间、状态、截止提醒去重记录", "producedBy": "patrol", "deletable": true },
-    "export/deadline-board.html": { "description": "作业截止看板：自包含 HTML，按紧急程度分组展示未提交作业；patrol 结束会自动刷新", "producedBy": "deadline", "deletable": true }
+    "export/deadline-board.html": { "description": "作业截止看板：自包含 HTML，按紧急程度分组展示未提交作业；patrol 结束会自动刷新", "producedBy": "deadline", "deletable": true },
+    "export/course-catalog.json": { "description": "课程目录：每门课的章节 / 课节 / 时长 / 完成状态", "producedBy": "catalog", "deletable": true }
   },
   "config": {
     "config/credentials.json": {

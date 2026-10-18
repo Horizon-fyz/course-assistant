@@ -147,6 +147,61 @@ https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList?recruitId=<li
 
 ---
 
+## `export/course-catalog.json`
+
+`catalog` 命令的产出：逐门课记录章节、课节、时长与完成状态。**删除该文件是安全的**，下次扫描会重建。
+
+```jsonc
+{
+  "at": "2026-10-18T12:42:00.000Z",          // 写入时间（ISO 8601）
+  "courses": [
+    {
+      "course": "大学生心理健康教育",
+      "courseId": 1000101708,
+      "recruitId": 435122,
+      "source": "videolist",                  // videolist（接口） / dom（页面回退） / none（失败）
+      "chapters": [
+        {
+          "no": 1,
+          "name": "第一章 绪论",
+          "lessons": [
+            {
+              "no": "1.3",
+              "title": "大学生心理健康的标准",
+              "seconds": 735,
+              "time": "12:15",
+              "studied": true,
+              "lessonId": 1234567,
+              "videoId": 7654321,
+              "chapterId": 2345678
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `at` | string | 扫描时间（ISO 8601） |
+| `courses[].course` | string | 课程名 |
+| `courses[].courseId` / `recruitId` | number \| null | 来自 `export/courses-resolved.json` |
+| `courses[].source` | string | `videolist` = 接口数据；`dom` = 页面回退；`none` = 扫描失败 |
+| `courses[].error` | string | 仅失败时出现：`缺少 secret` / `课节未加载` |
+| `chapters[].no` | number | 章序号 |
+| `chapters[].name` | string | 章名；`source=dom` 时为空字符串 |
+| `lessons[].no` | string | 课节编号 `章.节`（如 `1.3`），可直接传给 `catalog --watch` |
+| `lessons[].title` | string | 课节标题 |
+| `lessons[].seconds` / `time` | number / string | 时长：秒数 / `HH:MM:SS`；`source=dom` 时 `seconds` 为 0 |
+| `lessons[].studied` | boolean \| null | 是否完成；`source=dom` 时为 `null`（DOM 回退拿不到完成状态） |
+| `lessons[].lessonId` / `videoId` / `chapterId` | number \| null | 平台 ID；`source=dom` 时为 `null` |
+
+**关于完成状态（重要）**：接口里的 `isStudiedLesson` 实测恒为 `0`，**不可作为完成依据**。脚本只在页面 DOM 上读到 `li.video .time_icofinish` 时才置 `studied: true`，读不到 DOM 时回退成接口值（通常是 `false`）。
+
+---
+
 ## `config/credentials.json`（兼容 `account-live.json` / `account.json`）
 
 | 字段 | 必填 | 说明 |

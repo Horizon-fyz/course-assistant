@@ -60,11 +60,12 @@ Windows 下也可以直接**双击 `run.cmd`** —— 会做环境自检并显�
 | `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查（浏览器自动检测本机已装的，可指定 Firefox / 任意浏览器） |
 | `run.cmd docs` | 只生成文档：Markdown（打印版 + 纯文本）、Word、PDF、打印预览 HTML、Excel |
 | `run.cmd solve` | 只作答：识别题库 → 调用 AI（OpenAI 兼容）→ 输出答案汇总 + 回填版 |
-| `run.cmd answer` | 全自动作业：逐份打开未提交作业 → 题库/AI 作答 → 暂存 → 提交（默认真提交，可用 `--no-submit` 关闭；`--cross-check` 交叉验证，存疑题不提交） |
+| `run.cmd answer` | 全自动作业：逐份打开未提交作业 → 题库/AI 作答 → 提交（默认真提交，可用 `--no-submit` 关闭；`--cross-check` 交叉验证，存疑题不提交） |
 | `run.cmd patrol` | 作业巡检：新作业 / 状态变化 / 临近截止 → Windows 通知，可推送到飞书 / 企微 / 钉钉 |
 | `run.cmd deadline` | 截止看板：把本地作业数据生成可离线打开的 HTML，按紧急程度分组；巡检后自动刷新 |
 | `run.cmd schedule` | 定时巡检：安装 / 移除 / 查看 Windows 计划任务，每天自动跑 `patrol` |
 | `run.cmd watch` | 全自动看课：真实播放 + 1.0~1.5x 倍速 + 自动处理弹题（可能需人工完成人脸识别） |
+| `run.cmd catalog` | 课程目录：扫描章节 / 课节 / 时长 / 完成状态，可选某一节自动观看 |
 | `run.cmd auto` | 先 `answer` 再 `watch`；答题失败不中断看课 |
 | `run.cmd verify` | 校验产物：数据契约 + 文档完整性 + 产物清单 |
 | `run.cmd all` | 上面几步串起来：fetch → docs → verify → solve（未配 AI 时自动跳过 solve） |
@@ -99,6 +100,9 @@ run.cmd schedule show                   # 查看下次运行时间与上次结�
 run.cmd schedule remove                 # 删除定时巡检任务
 run.cmd watch --dry                     # 只列出课程与课节，不播放
 run.cmd watch --course 国家安全教育 --max 2 --rate 1.5
+run.cmd catalog                         # 扫描课程目录，再按提示选一节课
+run.cmd catalog --watch 1.3             # 扫描后直接自动完成编号 1.3 的课节
+run.cmd catalog --course 心理健康 --json # 只扫某门课并输出 JSON
 run.cmd login --restart-check           # 登录后顺带验证「重启浏览器仍在线」
 ```
 

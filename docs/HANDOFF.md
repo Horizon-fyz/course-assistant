@@ -7,9 +7,16 @@
 **全流程已跑通并验证通过**：登录 → 动态发现课程 → 解析考试入口 → 批量抓题 → 安全复查 → 生成打印稿。
 上次会话中断在"移植到本地盘 + 重新登录"这两步，现已全部完成。
 
+## 2026-10-18 桌面端重构
+
+- 桌面端改为原生 WinForms（`desktop/native/CourseHelper.cs`，C# 5 编译），不内嵌浏览器、不依赖 WebView2；界面只展示课程目录、完成状态与运行日志。
+- 浏览器侧仍由 CDP 接管已登录的 Edge；目录扫描走 `src/flows/course-catalog.mjs`，结果写入 `export/course-catalog.json`。
+- 旧 WebView2 架构（`desktop/host`、`desktop/serve.mjs`、`desktop/ui`）与旧打包脚本已删除；构建统一走 `packaging/build-automation.ps1`。
+- 自动作业修复：不再先「暂存」（暂存确认后平台会关闭答题页），直接提交；作业列表先切回「未提交」页签再找卡片。
+
 ## 2026-10-18 全仓代码审查与加固
 
-- 桌面端：`desktop/serve.mjs` 兼容源码/打包两种布局；C# 外壳增加 WebView2 消息来源校验、`shell:open` 协议白名单、截屏重入保护。
+- 桌面端：原生 WinForms 界面自绘（`Theme` / `Draw` / `Card` / `UiButton` / `StatusPill`），窗口标题栏启用深色沉浸模式；网页操作全部在后台 CDP 连接中进行。
 - Electron：启用 `sandbox`，拦截 `will-navigate` / 新窗口，IPC 校验发送方，后端启动失败即报错退出。
 - md-ai-answer：题目归一化补 `id`/`options`，答案汇总与回填兼容缺字段题目。
 - 凭据/会话/导出/自动化层：按审查结论修复；`node --check` 全仓通过（第三方 HTML 伪装的 `.js` 除外）。
@@ -143,6 +150,7 @@ node recon\login-and-persist.mjs --restart-check
 - 全流程编排：`src\flows\pipeline.mjs`
 - 登录 + 票据固化：`recon\login-and-persist.mjs`
 - 环境自检：`recon\verify-env.mjs`
-- 桌面端外壳：`desktop\host\Program.cs` + `desktop\serve.mjs`
+- 桌面端（原生 WinForms）：`desktop\native\CourseHelper.cs`
+- 课程目录扫描：`src\flows\course-catalog.mjs`
 - 独立 AI 作答组件：`md-ai-answer\`（CLI / Electron / 本地服务）
 - 上一轮数据备份：`export\backup-20261010-180734\`
