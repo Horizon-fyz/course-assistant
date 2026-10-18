@@ -6,6 +6,27 @@
 
 ---
 
+## 适用站点（源网页）
+
+本工具只面向**智慧树学生端**（`*.zhihuishu.com`），不访问其它平台。实际访问的页面与路由：
+
+| 用途 | 源网页 |
+|---|---|
+| 登录中心 | `https://login.zhihuishu.com/`（CAS 单点登录） |
+| 学生首页 / 课程列表 | `https://onlineweb.zhihuishu.com/onlinestuh5` |
+| 视频学习 | `https://studyvideoh5.zhihuishu.com/stuStudy?recruitAndCourseId={secret}` |
+| 作业列表 | `https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList?recruitId={listRid}` |
+| 作业作答 | `https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework/{recruitId}/{stuExamId}/{examId}/{courseId}/{schoolId}/{meetCourseType}` |
+| 作业复习 | `https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/checkHomework/{recruitId}/{stuExamId}/{examId}/{courseId}/{schoolId}?meetCourseType={n}&state=4` |
+
+数据接口：`onlineservice-api.zhihuishu.com`（课程 / 身份）、`studyservice-api.zhihuishu.com`（章节 / 进度）、
+`onlineexamh5new.zhihuishu.com` 下的作业接口（作业详情、作答结果、解析、答题卡）。
+
+所有请求都在**已登录的浏览器会话内**由页面自身发出，工具不伪造 `secretStr` 签名。
+平台改版导致域名或页面结构变化时，需要同步调整 `src/` 下对应的选择器与接口匹配规则。
+
+---
+
 ## 快速开始
 
 ```powershell

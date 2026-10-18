@@ -174,8 +174,8 @@ $readme = @'
   1. 主窗口工具栏点「设置」；
   2. 接口地址已预置通义千问（DashScope 兼容模式）
      https://dashscope.aliyuncs.com/compatible-mode/v1；
-  3. 已预置一个 API Key，模型默认 qwen3-vl-plus（视觉模型）；
-  4. 如需更换，改完点「保存配置」。
+  3. API Key 需要自己填写（视觉默认 qwen3-vl-plus，思考默认 deepseek-reasoner）；
+  4. 填完 Key 与需要的模型后点「保存配置」。
   （配置保存在本目录的 config.json，可直接用记事本改。）
 
 三、做题（截屏识题，只给答案，人工点击）

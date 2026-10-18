@@ -140,7 +140,7 @@ function resolveFromBank(entry, live) {
   for (const t of wantedTexts) {
     const n = normalize(t);
     const idx = live.options.findIndex((o) => normalize(o.text) === n);
-    if (idx >= 0) indexes.push(idx); else unmatched.push(String(t).slice(0, 40));
+    if (idx >= 0) { if (!indexes.includes(idx)) indexes.push(idx); } else unmatched.push(String(t).slice(0, 40));
   }
   return { ok: unmatched.length === 0 && indexes.length > 0, indexes: indexes.sort((a, b) => a - b), unmatched, note: '选项正文匹配' };
 }

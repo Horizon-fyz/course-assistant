@@ -25,11 +25,13 @@ export class AIRequestError extends Error {
   /**
    * @param {string} message
    * @param {number} [status] HTTP 状态码；网络层错误时为 0
+   * @param {boolean|null} [retryable] 显式指定是否可重试；null 表示按状态码判断
    */
-  constructor(message, status = 0) {
+  constructor(message, status = 0, retryable = null) {
     super(message);
     this.name = 'AIRequestError';
     this.status = status;
+    this.retryable = retryable;
   }
 }
 
@@ -86,7 +88,10 @@ export function createClient(config, deps = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onExternalAbort = () => controller.abort();
-    opts.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
 
     try {
       const res = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -110,7 +115,7 @@ export function createClient(config, deps = {}) {
 
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content;
-      if (!content) throw new AIRequestError('AI 接口返回内容为空');
+      if (!content) throw new AIRequestError('AI 接口返回内容为空', 0, false);
       return content;
     } finally {
       clearTimeout(timer);
@@ -131,11 +136,12 @@ export function createClient(config, deps = {}) {
         return await chatOnce(messages, opts);
       } catch (e) {
         lastErr = e;
-        const retriable =
+        const retriable = e.retryable === false ? false : (
           e.name === 'AbortError' ||
           e.status === 429 ||
           (e.status >= 500 && e.status < 600) ||
-          e.status === 0;
+          e.status === 0
+        );
         if (opts.signal?.aborted || !retriable || attempt === maxRetries) break;
         await sleep(Math.min(1000 * 2 ** attempt, 15000));
       }

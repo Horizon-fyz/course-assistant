@@ -10,7 +10,19 @@
   4. 自动播放课程视频（1.5 倍速、自动处理弹题、自动切下一节）
   5. 结束后停在窗口里，显示本次结果
 
-二、第一次使用
+二、适用网站（程序实际访问的页面）
+  本程序只针对「智慧树」学生端（zhihuishu.com），不访问其它平台：
+  1. 登录中心     https://login.zhihuishu.com/
+  2. 学生首页     https://onlineweb.zhihuishu.com/onlinestuh5
+  3. 视频学习页   https://studyvideoh5.zhihuishu.com/stuStudy?recruitAndCourseId=...
+  4. 作业列表     https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList?recruitId=...
+  5. 作业作答     https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework/...
+  6. 作业复习     https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/checkHomework/...
+  数据接口：onlineservice-api.zhihuishu.com、studyservice-api.zhihuishu.com
+            （只在已登录的浏览器页面里读取课程 / 作业数据）
+  提示：平台改版可能导致域名或页面结构变化，届时程序需要同步更新。
+
+三、第一次使用
   1. 双击「一键开始.exe」。
   2. 浏览器打开后，登录你的智慧树账号。
   3. 登录成功后不用关浏览器，程序会自动继续。
@@ -18,14 +30,14 @@
   5. 结束后看窗口汇总；有未完成项就按提示处理后，再双击一次。
      已经完成的作业和课节会自动跳过，不会重复做。
 
-三、环境要求
+四、环境要求
   · Windows 10 / 11（64 位）
   · 以下浏览器任选其一（推荐 Edge，Windows 自带即可）：
       Microsoft Edge / Google Chrome / Firefox
     同时装了多个时优先用 Chromium 系，只有 Firefox 时会自动走 Firefox
   · 安装包已自带 Node 运行时，不需要另装 Node.js
 
-四、AI 兜底（可选，不配置也能跑）
+五、AI 兜底（可选，不配置也能跑）
 随包附带一份题库，能覆盖常见题目。
 题库里没有的题：程序会先尝试 AI；没有配置密钥时随机选一个，保证整份作业能正常提交。
 想提高正确率再配置：
@@ -40,7 +52,7 @@
   如果平台还允许重做，会尝试自动申请重做并再答一轮（默认最多 2 轮）。
   不想复盘可在命令行加 --no-rethink；只想复盘不想重做可加 --no-redo。
 
-五、数据放在哪
+六、数据放在哪
   安装版：C:\Users\你的用户名\AppData\Local\智慧树一键全自动\
   便携版：解压出来的文件夹里
     app\export\                 抓取到的课程与作业数据
@@ -50,7 +62,7 @@
     app\browser-profile-edge\   登录态，只保存在本机
     app\browser-profile-firefox\ 用 Firefox 时的登录态，只保存在本机
 
-六、常见问题
+七、常见问题
   · 一直提示等待登录：在浏览器里完成登录即可；超过 15 分钟会退出，重开一次就行。
   · 只装了 Firefox：不用改任何设置，程序会自动用 Firefox 接管；
     若想强制指定浏览器，可在命令行加 --browser firefox 或 --browser-exe 浏览器路径。
@@ -63,5 +75,5 @@
     点「更多信息 → 仍要运行」即可。
   · 卸载：Windows 设置 → 应用 → 智慧树一键全自动 → 卸载。
 
-七、使用边界
+八、使用边界
 本程序只是把重复操作自动化，请遵守学校与平台的使用规定，仅用于自己的账号。

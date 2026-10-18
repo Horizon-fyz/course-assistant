@@ -806,7 +806,7 @@ stamp(`课程: ${courses.join('、')}`);
 stamp(`模式: ${DRY ? '演练（只列课节）' : `自然播放 · ${RATE}x · 自动弹题`}`);
 if (ai) stamp(`AI 兜底: ${ai.model}`);
 
-const report = { at: new Date().toISOString(), rate: RATE, courses: [] };
+const report = { at: new Date().toISOString(), rate: RATE, courses: [], finished: false };
 
 if (DRY) {
   const { ctx, describe, close } = await connect({
@@ -928,8 +928,17 @@ for (const course of courses) {
   writeFileSync(join(OUT, 'watch-report.json'), JSON.stringify(report, null, 2), 'utf8');
 }
 
+report.finished = true;
+writeFileSync(join(OUT, 'watch-report.json'), JSON.stringify(report, null, 2), 'utf8');
 stamp('\n══════════ 完成 ══════════');
 stamp('报告: recon\\apply\\watch-report.json');
+const badLessons = report.courses.flatMap((c) => c.lessons || [])
+  .filter((l) => /^(blocked|error|partial|paused)$/.test(l.status)).length;
+const courseErrors = report.courses.filter((c) => c.error).length;
 if (!KEEP_TABS) await tidy(ctx).catch(() => {});
 await close();
+if (badLessons || courseErrors) {
+  stamp(`⚠️ 有 ${badLessons} 节未完成${courseErrors ? `，${courseErrors} 门课程异常` : ''}`);
+  process.exit(1);
+}
 process.exit(0);

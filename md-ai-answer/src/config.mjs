@@ -59,16 +59,16 @@ export function pickVision(config) {
 }
 
 /**
- * 取出「思考模型（DeepSeek）」的调用参数。
+ * 取出「思考模型（DeepSeek）」的调用参数，兼容旧版扁平配置（baseUrl/apiKey/model）。
  * @param {Partial<Config>} config
  * @returns {{baseUrl:string, apiKey:string, model:string}}
  */
 export function pickReason(config) {
   const c = config || {};
   return {
-    baseUrl: c.reasonBaseUrl || '',
-    apiKey: c.reasonApiKey || '',
-    model: c.reasonModel || 'deepseek-reasoner',
+    baseUrl: c.reasonBaseUrl || c.baseUrl || '',
+    apiKey: c.reasonApiKey || c.apiKey || '',
+    model: c.reasonModel || c.model || 'deepseek-reasoner',
   };
 }
 

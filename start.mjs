@@ -221,17 +221,27 @@ async function stageHomework() {
     const t0 = Date.now();
     const code = runNode('src/auto-homework.mjs', [...browserArgs(), '--force']);
     const rep = readFresh(ANSWER_REPORT, t0);
-    const items = rep?.items ?? [];
-    const submitted = items.filter((x) => x.submitted).length;
-    const failed = items.filter((x) => !x.submitted);
-    last = { ok: code === 0, submitted, failed: failed.length, report: rep };
+    if (!rep || rep.finished !== true) {
+      const why = rep ? '答题脚本未正常结束（报告不完整）' : '答题脚本未产出报告';
+      last = { ok: false, skipped: false, submitted: 0, failed: 0, note: why };
+      bad(`${why}${code ? `（退出码 ${code}）` : ''}`);
+      if (attempt < max) await sleep(10_000);
+      continue;
+    }
+    const items = rep.items ?? [];
+    const submitted = new Set(items.filter((x) => x.submitted && !x.reviewOnly)
+      .map((x) => `${x.course}|${x.examName}`)).size;
+    // 同一份作业可能因重做递归出现多条记录，按「课程|作业名」去重
+    const failedMap = new Map();
+    for (const x of items) if (!x.submitted) failedMap.set(`${x.course}|${x.examName}`, x);
+    const failed = [...failedMap.values()];
+    last = { ok: failed.length === 0, submitted, failed: failed.length, report: rep };
 
-    if (code === 0) {
-      if (!rep) good('没有需要处理的作业');
-      else good(`提交成功 ${submitted} 份`);
+    if (failed.length === 0) {
+      good(submitted ? `提交成功 ${submitted} 份` : '没有需要处理的作业');
       return last;
     }
-    bad(`有 ${failed.length || '若干'} 份未提交成功`);
+    bad(`有 ${failed.length} 份未提交成功`);
     for (const it of failed.slice(0, 3)) {
       const why = it.error || (it.skipped?.length ? `有 ${it.skipped.length} 题无法确定答案` : '');
       if (why) info(`· ${it.course || ''} ${it.examName || ''}：${why}`);
@@ -272,9 +282,10 @@ async function stageWatch() {
     const rep = readFresh(WATCH_REPORT, t0);
     const s = summarizeWatch(rep);
 
-    if (code !== 0 || !rep) {
-      last = { ok: false, note: '看课脚本异常退出', ...s };
-      bad('看课脚本异常退出');
+    if (!rep || rep.finished !== true) {
+      const why = rep ? '看课脚本未正常结束（报告不完整）' : '看课脚本未产出报告';
+      last = { ok: false, note: why, ...s };
+      bad(`${why}${code ? `（退出码 ${code}）` : ''}`);
       if (attempt < max) await sleep(20_000);
       continue;
     }
@@ -339,29 +350,40 @@ if (DO_HOMEWORK && !data.answer) bad('缺少 export\\papers.json，答题阶段�
 if (DO_WATCH && !data.watch) bad('缺少 export\\courses-resolved.json，看课阶段跳过');
 
 let hw = { ok: true, skipped: true, note: '已跳过' };
-if (DO_HOMEWORK && data.answer) hw = await stageHomework();
-else if (!DO_HOMEWORK) info('按参数要求跳过答题');
+if (DO_HOMEWORK) {
+  hw = data.answer
+    ? await stageHomework()
+    : { ok: false, skipped: false, note: '缺少 export\\papers.json' };
+} else {
+  info('按参数要求跳过答题');
+}
 
 let watch = { ok: true, skipped: true, note: '已跳过' };
-if (DO_WATCH && data.watch) {
-  head('检查登录状态');
-  const again = await ensureLogin();
-  if (!again.ok) {
-    warn('登录已失效，看课阶段无法继续。');
-    watch = { ok: false, note: '登录失效' };
+if (DO_WATCH) {
+  if (!data.watch) {
+    watch = { ok: false, skipped: false, note: '缺少 export\\courses-resolved.json' };
   } else {
-    watch = await stageWatch();
+    head('检查登录状态');
+    const again = await ensureLogin();
+    if (!again.ok) {
+      warn('登录已失效，看课阶段无法继续。');
+      watch = { ok: false, note: '登录失效' };
+    } else {
+      watch = await stageWatch();
+    }
   }
-} else if (!DO_WATCH) info('按参数要求跳过看课');
+} else {
+  info('按参数要求跳过看课');
+}
 
 /* ───────── 汇总 ───────── */
 head('全部结束');
 const hwText = hw.skipped ? '已跳过'
   : hw.ok ? `完成${hw.report ? `（提交 ${hw.submitted} 份）` : '（本次没有待做作业）'}`
-    : `未完成（提交 ${hw.submitted ?? 0} 份，失败 ${hw.failed ?? 0} 份）`;
+    : `未完成（${hw.note ? hw.note + '；' : ''}提交 ${hw.submitted ?? 0} 份，失败 ${hw.failed ?? 0} 份）`;
 const watchText = watch.skipped ? '已跳过'
   : watch.ok ? `完成 ${watch.done ?? 0} 节`
-    : `未完成（完成 ${watch.done ?? 0} 节，异常 ${(watch.error ?? 0) + (watch.partial ?? 0) + (watch.paused ?? 0)} 节${watch.blocked ? `，被平台拦下 ${watch.blocked} 节` : ''}）`;
+    : `未完成${watch.note ? `：${watch.note}` : ''}（完成 ${watch.done ?? 0} 节，异常 ${(watch.error ?? 0) + (watch.partial ?? 0) + (watch.paused ?? 0)} 节${watch.blocked ? `，被平台拦下 ${watch.blocked} 节` : ''}）`;
 
 say(`  登录      ${login.user?.realName || '已登录'}`);
 say(`  作业      ${hwText}`);

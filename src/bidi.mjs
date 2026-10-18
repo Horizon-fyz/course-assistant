@@ -87,7 +87,15 @@ export class BidiConnection {
       }
     });
 
-    ws.addEventListener('close', () => { this.closed = true; });
+    ws.addEventListener('close', () => {
+      this.closed = true;
+      // 连接断开后，所有未完成的命令都不会再有响应：立即释放并报错
+      for (const p of this.pending.values()) {
+        clearTimeout(p.timer);
+        try { p.reject(new Error('BiDi 连接已关闭')); } catch { /* ignore */ }
+      }
+      this.pending.clear();
+    });
   }
 
   /** 打开连接并完成握手（session.new） */
@@ -242,15 +250,16 @@ export function findFirefox() {
   return cands.find((p) => p && existsSync(p)) || firefoxFromRegistry();
 }
 
-/** 结束占用指定 profile 的残留 firefox 进程（避免 profile 被锁） */
+/** 结束占用指定 profile 的残留 firefox 进程（避免 profile 被锁），返回被终止的 PID */
 export function killFirefoxByProfile(profileDir) {
   try {
     const tag = profileDir.replace(/'/g, "''");
-    execFileSync('powershell.exe', ['-NoProfile', '-Command',
-      `Get-CimInstance Win32_Process -Filter "Name='firefox.exe'" | Where-Object { $_.CommandLine -like '*${tag}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`],
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command',
+      `Get-CimInstance Win32_Process -Filter "Name='firefox.exe'" | Where-Object { $_.CommandLine -like '*${tag}*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $_.ProcessId } catch {} }`],
       { encoding: 'utf8', timeout: 20000 });
-    return true;
-  } catch { return false; }
+    const killed = String(out || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    return { ok: true, killed };
+  } catch { return { ok: false, killed: [] }; }
 }
 
 /** 默认的 user.js：关掉首启噪音；webdriver 由 preload script 处理（pref 在 BiDi 下无效） */
@@ -340,7 +349,10 @@ export async function launchFirefoxBidi(opts = {}) {
     }
   }
 
-  killFirefoxByProfile(profile);
+  const stale = killFirefoxByProfile(profile);
+  if (stale.killed.length) {
+    console.warn(`已结束占用 Firefox 配置目录的残留进程：${stale.killed.join(', ')}`);
+  }
   if (opts.fresh) rmSync(profile, { recursive: true, force: true });
   mkdirSync(profile, { recursive: true });
 

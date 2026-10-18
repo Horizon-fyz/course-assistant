@@ -121,15 +121,23 @@ function buildTargets(papers, resolved, courseFilter, examFilter) {
     const rec = resolved?.[course];
     if (!rec) continue;
     for (const it of items) {
-      if (it.state !== 1 || it.score !== null) continue;      // 只做未提交
       if (examFilter && !String(it.examName).includes(examFilter)) continue;
       const qs = (it.paper?.rt?.examBase?.workExamParts ?? []).flatMap((p) => p.questionDtos ?? []);
       if (!qs.length) continue;
-      out.push({
-        course, item: it, questions: qs, recruitId: rec.recruitId, listRid: rec.listRid,
-        url: 'https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework/'
-          + `${rec.recruitId}/${it.id}/${it.examId}/${it.courseId}/5371/${it.meetCourseType ?? 0}`,
-      });
+      const url = 'https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework/'
+        + `${rec.recruitId}/${it.id}/${it.examId}/${it.courseId}/5371/${it.meetCourseType ?? 0}`;
+      if (it.state === 1 && it.score === null) {             // 未提交：正常作答
+        out.push({ course, item: it, questions: qs, recruitId: rec.recruitId, listRid: rec.listRid, url });
+        continue;
+      }
+      // 已提交但上次复盘未完成：补一次复盘（不重交原作业）
+      const ledger = submittedLedger[paperKey(course, it)];
+      if (!DRY && RETHINK && ledger && ledger.reviewed === false) {
+        out.push({
+          course, item: it, questions: qs, recruitId: rec.recruitId, listRid: rec.listRid, url,
+          reviewOnly: true, ledgerScore: ledger.score ?? it.score ?? null,
+        });
+      }
     }
   }
   return out;
@@ -733,12 +741,24 @@ async function recheckWithAi(ai, q, chosen, platformTexts, analysisText) {
   }
 }
 
+/** 标记该作业复盘已处理，避免下次启动重复进入复习页 */
+function markReviewed(target, extra = {}) {
+  const key = paperKey(target.course, target.item);
+  const cur = submittedLedger[key];
+  if (!cur) return;
+  submittedLedger[key] = { ...cur, reviewed: true, reviewedAt: new Date().toISOString(), ...extra };
+  try { writeFileSync(SUBMITTED_FILE, JSON.stringify(submittedLedger, null, 2), 'utf8'); } catch { /* 台账写失败不阻塞主流程 */ }
+}
+
 /** 提交后：看错题 → 重新思考 → 沉淀覆盖答案 →（可选）申请重做并再答一轮 */
 async function rethinkAfterSubmit(page, target, item, ctxData, attempt) {
   if (!RETHINK || !item.submitted || item.score == null) return;
   const total = Number(target.item.totalScore)
     || target.questions.reduce((a, q) => a + (Number(q.questionScore) || 0), 0);
-  if (!total || item.score >= total) return;   // 满分 / 总分未知，无需复核
+  if (!total || item.score >= total) {   // 满分 / 总分未知，无需复核
+    markReviewed(target, { score: item.score });
+    return;
+  }
 
   log(`   🔍 得分 ${item.score}/${total}，开始回顾错题…`);
   const review = await captureReview(page, target);
@@ -777,6 +797,7 @@ async function rethinkAfterSubmit(page, target, item, ctxData, attempt) {
   if (!wrong.length) {
     log('      ✓ 没有识别到错题（可能全对，或平台未返回对错）');
     item.review = { ok: true, score: item.score, total, wrongCount: 0 };
+    markReviewed(target, { score: item.score });
     return;
   }
   log(`      识别到错题 ${wrong.length} 道，逐题重新思考：`);
@@ -823,11 +844,21 @@ async function rethinkAfterSubmit(page, target, item, ctxData, attempt) {
     wrong: wrong.map((w) => ({ stem: w.stem.slice(0, 60), chosen: w.chosen.slice(0, 40), platform: w.platformTexts })),
   };
 
-  if (!added || !REDO) return;
-  if (attempt >= MAX_ATTEMPTS) { log('      （已达到最大作答轮数，不再重做）'); return; }
+  if (!added || !REDO) {
+    markReviewed(target, { score: item.score });
+    return;
+  }
+  if (attempt >= MAX_ATTEMPTS) {
+    log('      （已达到最大作答轮数，不再重做）');
+    markReviewed(target, { score: item.score });
+    return;
+  }
   const ok = await applyRedo(page, target);
   item.redo = ok;
-  if (!ok) return;
+  if (!ok) {
+    markReviewed(target, { score: item.score });
+    return;
+  }
   await sleep(3000);
   log(`   🔄 重做已就绪，开始第 ${attempt + 1} 轮作答…`);
   await doPaper(page, target, ctxData, attempt + 1);
@@ -843,8 +874,11 @@ async function applyRedo(page, target) {
     if (n > 0) break;
     await sleep(1000);
   }
-  const card = page.locator('.examItemWrap').filter({ hasText: target.item.examName }).first();
-  if (await card.count() === 0) { log('      列表里找不到该作业，跳过重做'); return false; }
+  const cards = page.locator('.examItemWrap').filter({ hasText: target.item.examName });
+  const cardCount = await cards.count();
+  if (cardCount === 0) { log('      列表里找不到该作业，跳过重做'); return false; }
+  if (cardCount > 1) { log(`      列表里有 ${cardCount} 份同名作业，为避免误操作跳过重做`); return false; }
+  const card = cards.first();
   const btn = card.locator('a.showFromBtn, a.recreation').filter({ hasText: '申请重做' }).first();
   if (await btn.count() === 0) { log('      没有「申请重做」入口（次数已用完或未开放），跳过'); return false; }
   await humanClick(page, btn);
@@ -1048,7 +1082,7 @@ async function doPaper(page, target, ctxData, attempt = 1) {
     log(`   ✓ 提交成功${res.score != null ? `，本次成绩 ${res.score} 分` : ''}`);
     submittedLedger[paperKey(target.course, target.item)] = {
       at: new Date().toISOString(), course: target.course, examName: target.item.examName,
-      score: item.score,
+      score: item.score, reviewed: false,
     };
     writeFileSync(SUBMITTED_FILE, JSON.stringify(submittedLedger, null, 2), 'utf8');
     await rethinkAfterSubmit(page, target, item, ctxData, attempt);
@@ -1057,6 +1091,28 @@ async function doPaper(page, target, ctxData, attempt = 1) {
     item.error = res.err || '提交结果未确认';
   }
   await sleep(1200);
+  return item;
+}
+
+/* ═══════════════════════ 补复盘 ═══════════════════════ */
+
+/** 上次已提交但复盘没跑完：这次只进复习页补做复盘/重做，不重交原作业 */
+async function reviewExisting(page, target, ctxData) {
+  const item = {
+    course: target.course, examName: target.item.examName, url: target.url,
+    total: target.questions.length, at: new Date().toISOString(),
+    questions: [], skipped: [], submitted: true, reviewOnly: true,
+    submitEvidence: '', submitUrl: '', score: target.ledgerScore ?? null, error: null,
+  };
+  ctxData.report.items.push(item);
+  log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  log(`🔍 ${target.course} / ${target.item.examName}（补上次未完成的复盘）`);
+  if (item.score == null) {
+    log('   ⚠️ 台账里没有分数，无法判断是否需要复盘，跳过');
+    markReviewed(target, { score: item.score });
+    return item;
+  }
+  await rethinkAfterSubmit(page, target, item, ctxData, 1);
   return item;
 }
 
@@ -1071,16 +1127,19 @@ log(`复盘: ${RETHINK ? `开启（重做=${REDO ? '开' : '关'}，最多 ${MAX
 log(`模式: ${DRY ? '演练（不点页面）' : (SUBMIT ? '真实作答 + 自动提交' : '真实作答，不提交')}`);
 
 let targets = buildTargets(papers, resolved, COURSE, EXAM);
-const beforeSkip = targets.length;
-targets = targets.filter((t) => !submittedLedger[paperKey(t.course, t.item)]);
-const skippedDone = beforeSkip - targets.length;
+const normalBefore = targets.filter((t) => !t.reviewOnly).length;
+targets = targets.filter((t) => t.reviewOnly || !submittedLedger[paperKey(t.course, t.item)]);
+const skippedDone = normalBefore - targets.filter((t) => !t.reviewOnly).length;
 if (LIMIT > 0) targets = targets.slice(0, LIMIT);
 log(`待完成作业: ${targets.length} 份${skippedDone ? `（另有 ${skippedDone} 份已真实提交，跳过）` : ''}`);
 for (const [i, t] of targets.entries()) {
-  log(`  ${i + 1}. ${t.course} / ${t.item.examName}（${t.questions.length} 题）`);
+  log(`  ${i + 1}. ${t.course} / ${t.item.examName}（${t.questions.length} 题）${t.reviewOnly ? ' [补复盘]' : ''}`);
 }
 
 if (!targets.length) {
+  writeFileSync(join(OUT, 'auto-answer-report.json'),
+    JSON.stringify({ at: new Date().toISOString(), mode: DRY ? 'dry' : (SUBMIT ? 'auto' : 'answer-only'), items: [], finished: true }, null, 2),
+    'utf8');
   log('\n没有需要处理的作业。');
   process.exit(0);
 }
@@ -1098,7 +1157,7 @@ if (byAnchor.size !== targets.reduce((a, t) => a + t.questions.length, 0)) {
 }
 
 if (DRY) {
-  const report = { at: new Date().toISOString(), mode: 'dry', items: [] };
+  const report = { at: new Date().toISOString(), mode: 'dry', items: [], finished: true };
   for (const t of targets) await doPaper(null, t, { answers, byAnchor, ai: null, report });
   writeFileSync(join(OUT, 'auto-answer-report.json'), JSON.stringify(report, null, 2), 'utf8');
   log('\n演练完成。确认无误后去掉 --dry 真实执行。');
@@ -1118,12 +1177,13 @@ const page = ctx.pages().find((p) => p.url().includes('onlineexamh5new'))
   ?? await ctx.newPage();
 page.on('dialog', (d) => d.accept().catch(() => {}));
 
-const report = { at: new Date().toISOString(), mode: SUBMIT ? 'auto' : 'answer-only', items: [] };
+const report = { at: new Date().toISOString(), mode: SUBMIT ? 'auto' : 'answer-only', items: [], finished: false };
 const ctxData = { byAnchor, answers, ai, report };
 
 for (const [i, t] of targets.entries()) {
   try {
-    await doPaper(page, t, ctxData);
+    if (t.reviewOnly) await reviewExisting(page, t, ctxData);
+    else await doPaper(page, t, ctxData);
   } catch (e) {
     log(`   ✗ 异常：${String(e).slice(0, 160)}`);
     report.items.push({ course: t.course, examName: t.item.examName, error: String(e).slice(0, 300) });
@@ -1132,7 +1192,10 @@ for (const [i, t] of targets.entries()) {
   if (i < targets.length - 1) await sleep(1500);
 }
 
-const done = new Set(report.items.filter((x) => x.submitted).map((x) => `${x.course}|${x.examName}`)).size;
+report.finished = true;
+writeFileSync(join(OUT, 'auto-answer-report.json'), JSON.stringify(report, null, 2), 'utf8');
+
+const done = new Set(report.items.filter((x) => x.submitted && !x.reviewOnly).map((x) => `${x.course}|${x.examName}`)).size;
 const skipped = new Set(report.items.filter((x) => !x.submitted).map((x) => `${x.course}|${x.examName}`)).size;
 log('\n══════════ 完成 ══════════');
 log(`提交成功 ${done} 份，未提交/异常 ${skipped} 份`);

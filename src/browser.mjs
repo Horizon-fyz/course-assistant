@@ -152,8 +152,9 @@ export async function connect({ prefer = 'chromium', exe = null, firefoxProfile 
 
   const info = await ensureChromium({ exe });
   const b = await chromium.connectOverCDP(`http://127.0.0.1:${info.port}`);
+  const ctx = b.contexts()[0] ?? await b.newContext();
   return {
-    kind: 'cdp', browserName: info.browser, browser: b, ctx: b.contexts()[0],
+    kind: 'cdp', browserName: info.browser, browser: b, ctx,
     describe: `${info.browser} @ CDP ${info.port} (${info.version?.Browser || '?'})`,
     close: () => b.close().catch(() => {}),
   };
