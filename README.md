@@ -57,7 +57,7 @@ Windows 下也可以直接**双击 `run.cmd`** —— 会做环境自检并显�
 | `run.cmd import` | **导入个人信息**：从任意 JSON 导入，或 `--prompt` 交互录入 |
 | `run.cmd whoami` | 查看当前生效的凭据与来源，并把平台真实姓名写回 |
 | `run.cmd login` | 登录智慧树并把会话票据改写为持久 Cookie（关掉浏览器仍在线） |
-| `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查（默认 Edge，可换 Firefox / 任意浏览器） |
+| `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查（浏览器自动检测本机已装的，可指定 Firefox / 任意浏览器） |
 | `run.cmd docs` | 只生成文档：Markdown（打印版 + 纯文本）、Word、PDF、打印预览 HTML、Excel |
 | `run.cmd solve` | 只作答：识别题库 → 调用 AI（OpenAI 兼容）→ 输出答案汇总 + 回填版 |
 | `run.cmd answer` | 全自动作业：逐份打开未提交作业 → 题库/AI 作答 → 暂存 → 提交（默认真提交，可用 `--no-submit` 关闭；`--cross-check` 交叉验证，存疑题不提交） |
@@ -77,7 +77,7 @@ run.cmd import D:\other-system.json      # 导入别人/别的系统导出的凭
 run.cmd login --student-id 00000000000 --password "***"   # 临时指定，不落盘
 run.cmd fetch --course 国家安全教育       # 只抓某一门课
 run.cmd fetch --dry-run                 # 只发现课程，不抓题（确认新课程能否识别）
-run.cmd fetch --browser firefox         # 用 Firefox（走 WebDriver BiDi，默认 Edge/CDP）
+run.cmd fetch --browser firefox         # 用 Firefox（走 WebDriver BiDi，默认自动检测本机已装的浏览器）
 run.cmd fetch --browser-exe "D:\Brave\brave.exe"   # 任意浏览器：直接指定可执行文件
 run.cmd docs  --formats md,pdf          # 只产出指定格式
 run.cmd docs  --out D:\题库             # 产物输出到别的目录
@@ -248,7 +248,7 @@ zhs.mjs                       ← 统一入口（所有命令都从这里进）
 start.mjs / mcp-server.mjs    ← 启动器 / MCP 服务器
 run.cmd / mcp.cmd             ← Windows 启动脚本
 一键开始.cmd / 一键开始.exe    ← 双击启动（免命令行的全自动流程）
-一键打包.cmd                  ← 双击构建（调用 packaging\build-all.ps1）
+一键打包.cmd                  ← 双击构建（调用 packaging\build-automation.ps1）
 start-browser.ps1             ← 手动启动浏览器 / 登录辅助
 config\credentials.json       ← 凭据库（兼容 account-live.json / account.json）
 
@@ -292,18 +292,15 @@ recon\                        ← 工程校验脚本（一般不用管）
 
 export\                       ← 产物（Markdown / Word / PDF / Excel）
   make-docx.py / make-xlsx.py ←   文档生成器
-desktop\                      ← Windows 桌面端（C# 外壳 + 本地 Web UI）
+desktop\                      ← Windows 桌面端（原生 WinForms 界面，C# 5）
+  native\CourseHelper.cs      ←   主窗口 / 课程目录 / 一键看课（csc 编译）
 md-ai-answer\                 ← 独立 AI 作答组件（CLI / Electron / 本地服务）
 tools\                        ← 打包用的 C# 启动器源码（launcher.cs / setup-ai.cs）
 
 packaging\                    ← 打包素材与脚本（双击 一键打包.cmd 即可，平时不用改）
-  build-all.ps1               ←   一键构建（便携版 + 安装包）
-  build-portable.ps1          ←   组装便携版 dist\智慧树助手\
-  build-installer.ps1         ←   编译并签名安装包
-  build-automation.ps1        ←   组装「一键全自动」分发包
-  sign-helper.ps1             ←   自签名代码签名公共逻辑
-  installer*.iss              ←   Inno Setup 安装包脚本
-  config.*.json               ←   分发包的空密钥配置模板
+  build-automation.ps1        ←   一键构建（dist + 便携包 + 安装包）
+  installer-automation.iss    ←   Inno Setup 安装包脚本
+  config.automation.json      ←   分发包的空密钥配置模板
   installer-lang\             ←   安装包简体中文语言文件
 
 docs\                         ← 设计、交接与站点侦察报告

@@ -134,7 +134,8 @@ function buildTargets(papers, resolved, courseFilter, examFilter) {
       if (!qs.length) continue;
       const url = 'https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework/'
         + `${rec.recruitId}/${it.id}/${it.examId}/${it.courseId}/5371/${it.meetCourseType ?? 0}`;
-      if (it.state === 1 && it.score === null) {             // 未提交：正常作答
+      // state 1 = 未提交；state 5 = 退回重做，两者都还没有本轮成绩
+      if ((it.state === 1 || it.state === 5) && it.score === null) {
         out.push({ course, item: it, questions: qs, recruitId: rec.recruitId, listRid: rec.listRid, url });
         continue;
       }
@@ -277,6 +278,9 @@ const PAGE_TEXT = () => String(document.body?.innerText || '').replace(/\s+/g, '
 /* ═══════════════════════ 页面操作 ═══════════════════════ */
 
 async function openPaper(page, target) {
+  // 上次运行可能就停在同一份作业的 hash 路由上；此时 goto 不会真正重载 SPA，
+  // 页面会保留旧的（甚至点不动「下一题」的）状态，所以先记录一下再强制刷新
+  const sameUrl = page.url() === target.url;
   try {
     await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   } catch (e) {
@@ -284,7 +288,7 @@ async function openPaper(page, target) {
   }
   await sleep(3000);
   const ok = await page.evaluate((name) => String(document.body?.innerText || '').includes(name), target.item.examName).catch(() => false);
-  if (!ok) {
+  if (!ok || sameUrl) {
     try {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
     } catch (e) {
@@ -305,12 +309,108 @@ function judgeQ(typeName) {
   return /判断/.test(typeName);
 }
 
+/** 等作业列表渲染出卡片 */
+async function waitListCards(page, timeout = 30000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    const n = await page.evaluate(() => document.querySelectorAll('.examItemWrap').length).catch(() => 0);
+    if (n > 0) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
+/** 作业列表默认停在「未提交」页签；上一步若切到「已提交」，这里必须切回来 */
+async function openUnsubmittedTab(page) {
+  const tab = page.locator('#examStateTabWsj').first();
+  for (let i = 0; i < 20 && await tab.count() === 0; i++) await sleep(500);
+  if (await tab.count() === 0) return;
+  const cls = await tab.getAttribute('class').catch(() => '');
+  if (/\bcur\b/.test(cls || '')) return;
+  await humanClick(page, tab);
+  await sleep(1800);
+}
+
+/**
+ * 从作业列表点「开始答题」进入答题页。
+ * 「退回重做」的作业直达 dohomework URL 仍会被答复「试卷已提交,不能继续答题」，
+ * 只有从列表重新开始才会创建可作答的新记录。
+ */
+async function startFromList(page, target) {
+  if (!target.listRid) return null;
+  try {
+    await page.goto(LIST_URL(target), { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    log(`   ⚠️ 打开作业列表失败：${String(e.message || e).slice(0, 100)}`);
+    return null;
+  }
+  // 列表可能还停在上次查看的「已提交」页签（此时 0 张卡片），先切回「未提交」
+  await sleep(1500);
+  await openUnsubmittedTab(page);
+  if (!await waitListCards(page)) {
+    log('   ⚠️ 作业列表没有渲染出卡片');
+    return null;
+  }
+  const card = page.locator('.examItemWrap').filter({ hasText: target.item.examName }).first();
+  const cardCount = await card.count();
+  if (cardCount === 0) {
+    log('   ⚠️ 未提交列表里找不到该作业');
+    return null;
+  }
+  const start = card.locator('a.jobExamComBtn').first();
+  if (await start.count() === 0) {
+    log('   ⚠️ 作业卡片上没有「开始答题」按钮');
+    return null;
+  }
+
+  // 平台点「开始答题」会打开新标签页，必须接管新页，否则旧列表页永远等不到题面
+  const before = new Set(page.context().pages());
+  await humanClick(page, start);
+  log('   · 已点「开始答题」，等题面…');
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    const fresh = page.context().pages().filter((p) => !before.has(p));
+    for (const p of fresh) {
+      const n = await p.evaluate(() => document.querySelectorAll('.examPaper_subject .nodeLab').length).catch(() => 0);
+      if (n > 0) return p;
+    }
+    const n = await page.evaluate(() => document.querySelectorAll('.examPaper_subject .nodeLab').length).catch(() => 0);
+    if (n > 0) return page;
+    await sleep(1000);
+  }
+  const urls = page.context().pages().map((p) => p.url().slice(0, 100));
+  log(`   ⚠️ 等题面超时，当前标签页：${urls.join(' | ')}`);
+  return null;
+}
+
+/**
+ * 打开一份可作答的作业页。直达 URL 失效（试卷已提交）时回列表重进；
+ * 列表里也没有「开始答题」时，先申请重做再进入。
+ */
+async function acquirePaper(page, target) {
+  // 退回重做（state=5）的旧 URL 一定提示「试卷已提交」，直接从列表重进
+  const redoState = target.item.state === 5;
+  let opened = redoState ? false : await openPaper(page, target);
+  if (opened) {
+    const blocked = await page.evaluate(() => /试卷已提交|不能继续答题/.test(document.body.innerText)).catch(() => false);
+    if (!blocked) return page;
+    log('   ↻ 该作业已提交，改从列表进入…');
+  }
+  const started = await startFromList(page, target);
+  if (started) return started;
+  if (!REDO) return null;
+  const approved = await applyRedo(page, target);
+  if (!approved) return null;
+  return await startFromList(page, target);
+}
+
 /**
  * 把题库答案换算成页面选项下标。
  * @returns {{indexes:number[], unmatched:string[], letters:string, note:string}}
  */
 function resolveTargets(q, entry, live) {
-  const opts = q.questionOptions || [];
+  const paperOpts = q.questionOptions || [];
+  const bankOpts = Array.isArray(entry?.options) ? entry.options : [];
   const letters = String(entry?.answer || '').toUpperCase().replace(/[^A-Z]/g, '');
   const correctTexts = (entry?.correctTexts || []).map((t) => cleanText(t)).filter(Boolean);
   if (!letters && !correctTexts.length) return { indexes: [], unmatched: ['题库无答案'], letters: '', note: '题库无答案' };
@@ -323,8 +423,17 @@ function resolveTargets(q, entry, live) {
   } else {
     for (const ch of letters) {
       const i = ch.charCodeAt(0) - 65;
-      if (i < 0 || i >= opts.length) continue;
-      const text = cleanText(opts[i].content);
+      // 题库字母是相对「题库自身」的选项顺序，页面/抓取顺序每次都会随机，
+      // 所以必须先用题库自己的 options 把字母翻成正文，再去页面里按正文匹配
+      let text = '';
+      if (bankOpts.length) {
+        const byKey = bankOpts.find((o) => String(o?.key || '').toUpperCase() === ch);
+        const hit = byKey || bankOpts[i];
+        text = cleanText(hit?.text ?? hit?.content);
+      } else if (i >= 0 && i < paperOpts.length) {
+        text = cleanText(paperOpts[i].content);
+      }
+      if (!text) continue;
       wanted.push({ text, value: judgeValue(text) });
     }
   }
@@ -376,6 +485,12 @@ async function setOptions(page, indexes, eid = null) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = await page.evaluate(READ_VISIBLE);
     if (!before) throw new Error('页面题目消失');
+    // 上次作答（或旧答案）可能残留了不该选的选项，多选里必须先取消勾选
+    for (let i = 0; i < before.options.length; i++) {
+      if (!before.options[i]?.checked || indexes.includes(i)) continue;
+      await clickOption(page, i, eid);
+      await sleep(180 + Math.random() * 220);
+    }
     for (const i of indexes) {
       if (before.options[i]?.checked) continue;
       await clickOption(page, i, eid);
@@ -495,18 +610,6 @@ async function clickDialogButton(page, textRe, buttonRe) {
 // 按钮文本可能带换行/缩进，不能用 ^...$ 完全匹配
 const CONFIRM_BTN = /(确定|确认|提交|继续提交|确认提交|是)/;
 
-/** 最后一题先暂存：只确认「暂存」那个框，并等它彻底消失 */
-async function saveDraft(page) {
-  if (!await clickButton(page, '暂存作业')) return false;
-  const dlg = await waitDialog(page, /暂存|保存/, 8000) ?? await waitDialog(page, /./, 3000);
-  if (!dlg) return false;
-  const re = /暂存|保存/.test(dlg.text) ? /暂存|保存/ : /./;
-  if (!await clickDialogButton(page, re, CONFIRM_BTN)) return false;
-  await waitNoDialog(page, 10000);
-  const t = await page.evaluate(PAGE_TEXT).catch(() => '');
-  return /保存成功|暂存成功/.test(t);
-}
-
 /** 页面上的飘字/弹窗文案（提交结果通常在这里） */
 const RESULT_TEXT = () => {
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
@@ -551,23 +654,46 @@ async function waitSubmitResult(page, timeout = 30000) {
 async function submitPaper(page) {
   const dialogs = [];
   const note = (t) => { const s = String(t || '').replace(/\s+/g, ' ').trim(); if (s) dialogs.push(s); };
+  const ctx = page.context();
+  const watch = {
+    closed: false,
+    onPage: (p) => log(`    · 新标签页：${p.url().slice(0, 90)}`),
+    onClose: () => { watch.closed = true; log(`    · 答题页被关闭：${page.url().slice(0, 90)}`); },
+    onCrash: () => log('    · 答题页崩溃'),
+    onNav: (f) => { if (f === page.mainFrame()) log(`    · 跳转：${f.url().slice(0, 120)}`); },
+    onResp: async (resp) => {
+      const u = resp.url();
+      if (!/submit|handIn|saveStudentAnswer|commit|finish/i.test(u)) return;
+      try {
+        const t = await resp.text();
+        log(`    · ${u.split('/').pop().split('?')[0]} → ${t.replace(/\s+/g, ' ').slice(0, 140)}`);
+      } catch {}
+    },
+  };
+  ctx.on('page', watch.onPage);
+  page.on('close', watch.onClose);
+  page.on('crash', watch.onCrash);
+  page.on('framenavigated', watch.onNav);
+  page.on('response', watch.onResp);
+  try {
+    // 注意：不再先点「暂存作业」——平台在暂存确认后会关闭答题页，
+    // 导致后续「提交作业」无从点击。选项一旦点选平台就会自动保存，直接提交即可。
 
-  // 1) 暂存最后一题（不能把这步的确认框当成提交确认）
-  const drafted = await saveDraft(page);
-  if (drafted) log('    ✓ 已暂存最后一题');
-
-  // 2) 点「提交作业」，只确认带「提交/交卷」字样的那个框
-  if (!await clickButton(page, '提交作业')) {
-    return { ok: false, err: '找不到「提交作业」按钮', dialogs, text: '', url: page.url() };
-  }
-  const first = await waitDialog(page, /提交|交卷/, 15000);
-  if (!first) {
-    // 可能是原生 confirm（已被自动接受），直接看结果
-    const r = await waitSubmitResult(page, 15000);
-    if (r.ok) return { ok: true, dialogs, text: r.text, url: r.url };
-    return { ok: false, err: '点击「提交作业」后没有出现确认框，也没看到成功提示', dialogs, text: r.text, url: r.url };
-  }
-  note(first.text);
+    // 1) 点「提交作业」，只确认带「提交/交卷」字样的那个框
+    log('    · 点击「提交作业」');
+    if (!await clickButton(page, '提交作业')) {
+      return { ok: false, err: '找不到「提交作业」按钮', dialogs, text: '', url: page.url() };
+    }
+    const first = await waitDialog(page, /提交|交卷/, 15000);
+    if (!first) {
+      // 可能是原生 confirm（已被自动接受），直接看结果
+      const r = await waitSubmitResult(page, 15000);
+      if (r.ok) return { ok: true, dialogs, text: r.text, url: r.url, score: r.score ?? null };
+      if (watch.closed) return { ok: false, err: '提交后答题页被关闭', dialogs, text: '', url: '', pageClosed: true };
+      return { ok: false, err: '点击「提交作业」后没有出现确认框，也没看到成功提示', dialogs, text: r.text, url: r.url };
+    }
+    note(first.text);
+  log(`    · 提交确认框：${first.text.slice(0, 80)}`);
   await clickDialogButton(page, /提交|交卷/, CONFIRM_BTN);
 
   // 3) 可能还有「还有题目未作答，是否继续提交」的二次确认
@@ -581,9 +707,20 @@ async function submitPaper(page) {
 
   // 4) 等真正的结果
   const r = await waitSubmitResult(page, 30000);
-  if (r.ok) return { ok: true, dialogs, text: r.text, url: r.url };
+  if (r.ok) return { ok: true, dialogs, text: r.text, url: r.url, score: r.score ?? null };
+  if (watch.closed) return { ok: false, err: '提交后答题页被关闭', dialogs, text: '', url: '', pageClosed: true };
   const remaining = await page.evaluate(RESULT_TEXT).catch(() => '');
   return { ok: false, err: '没有等到提交成功的反馈', dialogs, text: r.text, url: r.url, remaining };
+  } catch (e) {
+    if (watch.closed) return { ok: false, err: '提交过程中答题页被关闭', dialogs, text: '', url: '', pageClosed: true };
+    throw e;
+  } finally {
+    ctx.off('page', watch.onPage);
+    page.off('close', watch.onClose);
+    page.off('crash', watch.onCrash);
+    page.off('framenavigated', watch.onNav);
+    page.off('response', watch.onResp);
+  }
 }
 
 /* ═══════════════════════ 错题回顾 + 重新思考 ═══════════════════════ */
@@ -599,8 +736,9 @@ const REVIEW_URL = (target) => 'https://onlineexamh5new.zhihuishu.com/stuExamWeb
   + `${target.recruitId}/${target.item.id}/${target.item.examId}/${target.item.courseId}/5371`
   + `?meetCourseType=${target.item.meetCourseType ?? 0}&state=4`;
 
+// 只带 recruitId 时平台会落到「当前选中课程」的列表（可能是别的课），必须同时带 courseId
 const LIST_URL = (target) => 'https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList'
-  + `?recruitId=${target.listRid}`;
+  + `?recruitId=${target.listRid}&courseId=${target.item.courseId}`;
 
 const READ_REVIEW_BLOCKS = () => {
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
@@ -936,8 +1074,18 @@ async function applyRedo(page, target) {
     if (n > 0) break;
     await sleep(1000);
   }
+  await openUnsubmittedTab(page);
   const cards = page.locator('.examItemWrap').filter({ hasText: target.item.examName });
-  const cardCount = await cards.count();
+  let cardCount = await cards.count();
+  if (cardCount === 0) {
+    // 提交后的作业只在「已提交」页签里，默认的「未提交」页签找不到
+    const doneTab = page.locator('#examStateTabYsj').first();
+    if (await doneTab.count() > 0) {
+      await humanClick(page, doneTab);
+      await sleep(2500);
+      cardCount = await cards.count();
+    }
+  }
   if (cardCount === 0) { log('      列表里找不到该作业，跳过重做'); return false; }
   if (cardCount > 1) { log(`      列表里有 ${cardCount} 份同名作业，为避免误操作跳过重做`); return false; }
   const card = cards.first();
@@ -1023,12 +1171,14 @@ async function doPaper(page, target, ctxData, attempt = 1) {
     return item;
   }
 
-  const opened = await openPaper(page, target);
+  const opened = await acquirePaper(page, target);
   if (!opened) {
     item.error = '作业页加载失败';
     log('   ✗ 作业页加载失败，跳过');
     return item;
   }
+  // 「开始答题」可能开在新标签页：后续所有操作都切到真正承载题面的页
+  page = opened;
   await page.bringToFront().catch(() => {});
   await sleep(1200);
   await dismissStartDialog(page);
@@ -1268,7 +1418,8 @@ if (CROSS_CHECK) log(`交叉验证: 开启（置信度门槛 ${MIN_CONF}${ALLOW_
 
 let targets = buildTargets(papers, resolved, COURSE, EXAM);
 const normalBefore = targets.filter((t) => !t.reviewOnly).length;
-targets = targets.filter((t) => t.reviewOnly || !submittedLedger[paperKey(t.course, t.item)]);
+// 台账只用于拦截「刚提交完、题库还没刷新」的旧记录；state=5 是平台明确退回重做，允许再答
+targets = targets.filter((t) => t.reviewOnly || t.item.state === 5 || !submittedLedger[paperKey(t.course, t.item)]);
 const skippedDone = normalBefore - targets.filter((t) => !t.reviewOnly).length;
 if (LIMIT > 0) targets = targets.slice(0, LIMIT);
 log(`待完成作业: ${targets.length} 份${skippedDone ? `（另有 ${skippedDone} 份已真实提交，跳过）` : ''}`);

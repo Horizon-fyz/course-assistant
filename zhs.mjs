@@ -11,6 +11,7 @@
 //    node zhs.mjs patrol              巡检作业：新作业 / 临近截止 / 状态变化 + 通知
 //    node zhs.mjs deadline            作业截止看板（生成本地 HTML）
 //    node zhs.mjs schedule            查看定时巡检计划任务
+//    node zhs.mjs catalog             扫描课程目录（章节 / 课节 / 完成状态）并选择某节自动看
 //    node zhs.mjs watch               全自动看课（1.5x + 自动弹题）
 //    node zhs.mjs auto                全自动：先答题再看课
 //    node zhs.mjs login               登录并固化会话（重启不丢）
@@ -29,6 +30,7 @@
 //    node zhs.mjs patrol --offline                不开浏览器，只按本地数据巡检
 //    node zhs.mjs deadline --open                 生成截止看板并直接用浏览器打开
 //    node zhs.mjs schedule install --time 08:00   每天 08:00 自动巡检
+//    node zhs.mjs catalog --watch 1.3             扫描目录并自动完成 1.3 节
 //
 //  退出码：0 成功 / 1 出错 / 2 未登录 / 3 校验不通过
 // ═══════════════════════════════════════════════════════════════════
@@ -177,6 +179,7 @@ function cmdHelp() {
     ['patrol', '巡检作业：新作业 / 临近截止 / 状态变化 + 通知'],
     ['deadline', '截止看板：按紧急程度生成可离线打开的 HTML'],
     ['schedule', '定时巡检：安装 / 移除 / 查看 Windows 计划任务'],
+    ['catalog', '课程目录：章节 / 课节 / 时长 / 完成状态，可选某节自动看'],
     ['watch', '全自动看课：真实播放 + 1.5x + 自动弹题'],
     ['auto', '全自动：先答题，再看课'],
     ['verify', '校验产物：数据契约 + 文档完整性 + 产物清单'],
@@ -186,7 +189,7 @@ function cmdHelp() {
   head('细参');
   say('  fetch --course 国家安全教育    只抓某一门课');
   say('  fetch --dry-run                只发现课程，不抓题');
-  say('  fetch --browser firefox        指定浏览器（默认 Edge）');
+  say('  fetch --browser firefox        指定浏览器（默认自动检测本机已装的那个）');
   say('  docs  --formats md,pdf         只产出指定格式（md / md-bare / docx / pdf / xlsx）');
   say('  docs  --out D:\\题库            产物输出到别的目录');
   say('  solve --mock                   离线试跑作答（不调用 AI）');
@@ -204,6 +207,10 @@ function cmdHelp() {
   say('  deadline --course 国家安全      只看某一门课');
   say('  schedule install --time 08:00  每天 08:00 自动巡检');
   say('  schedule remove                删除定时巡检任务');
+  say('  catalog                        扫描课程目录，并按提示选择要自动完成的课节');
+  say('  catalog --watch 1.3            扫描后直接自动完成编号 1.3 的课节');
+  say('  catalog --course 国家安全      只扫描某一门课');
+  say('  catalog --json                 只输出目录 JSON（保存到 export\\course-catalog.json）');
   say('  watch  --rate 1.25             看课倍速（默认 1.5，平台上限 1.5）');
   say('  watch  --minutes 120           最多跑 120 分钟');
   say('  auto   --dry                   只演练，不动页面');
@@ -247,7 +254,7 @@ function cmdStatus() {
   return 0;
 }
 
-function cmdDoctor() {
+async function cmdDoctor() {
   head('环境自检');
   let problems = 0;
   const line = (name, good, detail) => {
@@ -268,12 +275,34 @@ function cmdDoctor() {
   const bOk = existsSync(browserDir);
   line('浏览器运行时目录', bOk, bOk ? browserDir : `缺失：${browserDir}（Playwright Firefox 需要）`);
 
+  // 现场探测这台电脑实际装了什么浏览器（不依赖预设清单，换台电脑结果自然不同）
+  try {
+    const { listAvailableBrowsers } = await import('./src/core/browser.mjs');
+    const found = listAvailableBrowsers();
+    const SRC = {
+      'path-hint': '常见路径', registry: '注册表', PATH: 'PATH',
+      playwright: 'Playwright', firefox: '系统安装', explicit: '手动指定',
+    };
+    line('可用浏览器', found.length > 0,
+      found.length
+        ? found.map((b) => `${b.name}（${SRC[b.source] || b.source}）`).join(' / ')
+        : '未检测到：装 Edge / Chrome / Firefox 任一即可，或运行 npx playwright install chromium');
+  } catch (e) {
+    line('可用浏览器', false, '探测失败：' + String(e.message || e).slice(0, 80));
+  }
+
   const acc = readAccount();
   line('凭据文件', !!acc, acc ? `config\\${acc.file}` : '未找到 config\\account-live.json');
 
-  const profDir = join(ROOT, 'browser-profile-edge');
-  const profOk = existsSync(profDir);
-  line('Edge 登录资料', profOk, profOk ? 'browser-profile-edge（会话已固化）' : '还没登录过：node zhs.mjs login');
+  // 浏览器 profile 不写死品牌：本机用哪个浏览器，就检查哪个目录
+  let profiles = [];
+  try {
+    profiles = readdirSync(ROOT)
+      .filter((n) => n.startsWith('browser-profile'))
+      .filter((n) => { try { return readdirSync(join(ROOT, n)).length > 0; } catch { return false; } });
+  } catch { /* ignore */ }
+  line('浏览器登录资料', profiles.length > 0,
+    profiles.length ? `${profiles.join(' / ')}（会话已固化）` : '还没登录过：node zhs.mjs login');
 
   // 题库数据
   const s = summarize();
@@ -692,6 +721,106 @@ function cmdWatch() {
   return runAutomation('flows/watch-course.mjs');
 }
 
+/** 课程目录：扫描章节 / 课节 / 完成状态，可指定某节自动观看 */
+async function cmdCatalog() {
+  head('课程目录');
+  info('扫描每门课的视频页：章节 / 课节 / 时长 / 是否已完成');
+  const scanCode = runAutomation('flows/course-catalog.mjs');
+  if (scanCode !== 0) return scanCode;
+
+  const file = join(EXPORT, 'course-catalog.json');
+  let cat = null;
+  try { cat = JSON.parse(readFileSync(file, 'utf8')); } catch { /* 下面统一提示 */ }
+  if (!cat) { bad('目录文件读取失败：export\\course-catalog.json'); return 1; }
+
+  const all = [];
+  for (const c of cat.courses || []) {
+    if (c.error) continue;
+    for (const ch of c.chapters || []) {
+      for (const l of ch.lessons || []) all.push({ ...l, course: c.course });
+    }
+  }
+  if (!all.length) { warn('目录为空，没有可选课节'); return 1; }
+
+  const direct = typeof flag('watch') === 'string' ? flag('watch') : null;
+  const skipPick = has('json') || has('no-pick');
+
+  let input = direct;
+  if (!input && !skipPick) {
+    if (!process.stdin.isTTY) {
+      info('非交互环境：用 catalog --watch <编号> 指定要自动完成的课节');
+      return 0;
+    }
+    const pending = all.filter((l) => l.studied !== true).length;
+    head('选择要自动完成的课节');
+    say(`  共 ${all.length} 节，未完成 ${pending} 节`);
+    say('  输入课节编号（如 1.3）；同名编号多门课时带上课程关键字（如 心理健康 1.3）');
+    say('  直接回车退出');
+    input = '';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const line = String(await askLine(attempt === 0 ? '> ' : '请重新输入> ')).trim();
+      if (!line) return 0;
+      const hit = resolveCatalogTarget(line, all);
+      if (hit) { input = hit; break; }
+    }
+    if (!input) return 1;
+  }
+  if (!input || !String(input).trim()) return 0;
+
+  const target = typeof input === 'string' ? resolveCatalogTarget(input.trim(), all) : input;
+  if (!target) return 1;
+
+  if (target.studied === true) {
+    warn(`${target.course} ${target.no} 已标记为完成；watch 会自动确认并跳过`);
+  }
+  head('自动完成');
+  say(`  ${target.course} · ${target.no} ${target.title}`);
+
+  // 只把看课相关参数透传给 watch，课程与课节用目录解析结果
+  const pass = new Set(['rate', 'minutes', 'face-wait', 'no-ai', 'no-tidy', 'browser', 'browser-exe']);
+  const args = ['--course', target.course, '--lesson', target.no];
+  for (let i = 1; i < ARGV.length; i++) {
+    const a = ARGV[i];
+    if (!a.startsWith('--')) continue;
+    const k = a.slice(2);
+    if (!pass.has(k)) continue;
+    args.push(a);
+    const v = ARGV[i + 1];
+    if (v !== undefined && !v.startsWith('--')) { args.push(v); i++; }
+  }
+  return runAutomation('flows/watch-course.mjs', args);
+}
+
+/** 在目录里定位课节：精确编号优先，其次「编号 + 标题」包含；多门课同名时要求带课程关键字 */
+function resolveCatalogTarget(input, all) {
+  const parts = input.split(/\s+/).filter(Boolean);
+  let lessonKey = parts[0] || '';
+  let courseKey = '';
+  if (parts.length > 1) {
+    lessonKey = parts[parts.length - 1];
+    courseKey = parts.slice(0, -1).join(' ');
+  }
+
+  const pool = courseKey ? all.filter((x) => x.course.includes(courseKey)) : all;
+  let hits = pool.filter((x) => x.no === lessonKey);
+  if (!hits.length) hits = pool.filter((x) => `${x.no} ${x.title}`.includes(lessonKey));
+
+  if (!hits.length) {
+    bad(`没有匹配的课节：${input}`);
+    return null;
+  }
+  if (hits.length === 1) return hits[0];
+
+  const courses = [...new Set(hits.map((x) => x.course))];
+  if (courses.length > 1) {
+    bad(`编号 ${lessonKey} 在多门课中都存在：${courses.join('、')}`);
+    say(`  请带上课程关键字，例如：${courses[0].slice(0, 4)} ${lessonKey}`);
+    return null;
+  }
+  // 同一门课里包含匹配出多节：优先未完成的第一节
+  return hits.find((x) => x.studied !== true) ?? hits[0];
+}
+
 function cmdAuto() {
   head('全自动答题 + 看课');
   const a = runAutomation('flows/auto-homework.mjs');
@@ -739,6 +868,7 @@ const COMMANDS = {
   patrol: cmdPatrol,
   deadline: cmdDeadline,
   schedule: cmdSchedule,
+  catalog: cmdCatalog,
   watch: cmdWatch,
   auto: cmdAuto,
   all: cmdAll,

@@ -73,7 +73,8 @@ export function collectHomework(papers, resolved = {}, { course = '', now = Date
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const pending = Number(hw.state) === 1 && hw.score == null;
+      // state 1 = 未提交；state 5 = 退回重做，都还需要作答
+      const pending = (Number(hw.state) === 1 || Number(hw.state) === 5) && hw.score == null;
       const endTs = parseTime(hw.endDate);
       const hoursLeft = endTs == null ? null : Math.round(((endTs - now) / 3600000) * 10) / 10;
       let bucket = 'done';

@@ -42,7 +42,7 @@ node zhs.mjs doctor
 | 退出码 | `0` 全部就绪；`1` 存在不满足项（有多少项都返回 1） |
 | 副作用 | 无（只读；会临时执行 `python -c "import docx, openpyxl"` 探测库是否可用） |
 
-检查项：Node 版本、Python 文档库、Playwright 安装、浏览器运行时目录、凭据文件、Edge 登录资料、题库数据。
+检查项：Node 版本、Python 文档库、Playwright 安装、浏览器运行时目录、可用浏览器（运行 `doctor` 的那台电脑现场探测到的结果与来源：常见路径 / 注册表 / PATH / Playwright / 系统安装）、凭据文件、浏览器登录资料（哪个浏览器的 profile 非空就报哪个）、题库数据。
 
 **调用方建议**：任何自动化流程开始前先跑它。
 
@@ -422,6 +422,35 @@ node zhs.mjs schedule [show|install|remove] [--time 08:00] [--name ZHS-Patrol] [
 
 ---
 
+### `catalog` — 课程目录扫描
+
+```
+node zhs.mjs catalog [--course <课程名>] [--watch <编号>] [--json] [--no-pick]
+                     [watch 的参数]
+```
+
+逐课打开视频页，扫描章节与课节（标题、时长、是否已完成），保存目录并支持选择某一节自动观看。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `--course` | string | 全部课程 | 只扫描名称包含该值的课程 |
+| `--watch` | string | — | 扫描后直接自动完成指定课节（如 `1.3`；多门课同编号时写 `心理健康 1.3`） |
+| `--json` | 开关 | 关 | 只输出目录 JSON（同时写入 `export/course-catalog.json`） |
+| `--no-pick` | 开关 | 关 | 扫描完不进入交互选择 |
+| 其余 | — | — | `--rate` / `--minutes` / `--face-wait` / `--no-ai` / `--browser` 等透传给 `watch` |
+
+| 项 | 说明 |
+|---|---|
+| 前置条件 | `export/courses-resolved.json` 存在（先跑 `fetch`），且浏览器已登录 |
+| 产出文件 | `export/course-catalog.json`（章节 / 课节 / 时长 / `isStudiedLesson` 完成状态） |
+| 交互 | TTY 下扫描完成后提示输入课节编号；直接回车退出 |
+| 退出码 | `0` 成功；`1` 扫描失败或课节无法定位 |
+
+> 完成状态来自视频页自身发出的 `learning/videolist` 响应（`isStudiedLesson === 1`）；
+> 未捕获到该响应时回退读取 DOM `li.video`，此时完成状态显示为 `?`。
+
+---
+
 ### `watch` — 全自动看课
 
 ```
@@ -436,7 +465,7 @@ node zhs.mjs watch [--dry] [--course <课程名>] [--lesson <课节>] [--from <�
 |---|---|---|---|
 | `--dry` | 开关 | 关 | 演练：只列出课程与课节，不播放 |
 | `--course` | string | 全部课程 | 只处理名称包含该值的课程 |
-| `--lesson` | string | 全部课节 | 只处理「序号 + 标题」包含该值的课节 |
+| `--lesson` | string | 全部课节 | 只处理指定课节：优先按编号精确匹配（如 `1.3`），否则按「序号 + 标题」包含匹配 |
 | `--from` | string | — | 从匹配的课节开始（含该节） |
 | `--max` | number | `0` | 每门课最多播放 N 节（`0` = 全部） |
 | `--minutes` | number | `0` | 总时长上限（分钟，`0` = 不限） |

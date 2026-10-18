@@ -45,8 +45,8 @@ function kindFromExe(exe) {
 
 /**
  * 解析实际要用的浏览器：
- *   auto    → 优先 Chromium 系，没有才用 Firefox
- *   chromium / chrome → Chromium 系
+ *   auto    → 先枚举本机真实装了的浏览器：有 Chromium 系就用，没有才用 Firefox
+ *   chromium / chrome / edge → Chromium 系
  *   firefox → Firefox
  * 指定 --browser-exe 时以文件名判定种类。
  */
@@ -154,8 +154,13 @@ async function ensureLogin() {
         warn(`${a.prefer === 'firefox' ? 'Firefox' : 'Chromium 系浏览器'}启动失败：` + String(e).slice(0, 160));
       } else {
         bad('浏览器启动失败：' + String(e).slice(0, 200));
-        if (a.prefer === 'firefox') info('请先安装 Firefox，或用 --browser-exe 指定浏览器路径。');
-        else info('请先安装 Edge/Chrome/Firefox 之一，或用 --browser firefox / --browser-exe 指定。');
+        if (a.prefer === 'firefox') {
+          info(BROWSER.auto
+            ? '本机没有检测到可用浏览器：装 Edge / Chrome / Firefox 任一即可，或用 --browser-exe 指定路径。'
+            : '请先安装 Firefox，或用 --browser-exe 指定浏览器路径。');
+        } else {
+          info('装任意浏览器后重试，或用 --browser-exe 指定路径，或运行 npx playwright install chromium。');
+        }
       }
     }
   }
@@ -339,8 +344,12 @@ if (!existsSync(join(ROOT, 'node_modules', 'playwright'))) {
 }
 
 head('第 1 步 · 启动浏览器并确认登录');
-if (BROWSER.auto) info('浏览器：自动选择（优先 Chromium 系，未安装则用 Firefox）');
-else info('浏览器：' + (BROWSER.prefer === 'firefox' ? 'Firefox' : 'Chromium 系') + (BROWSER.exe ? `（${BROWSER.exe}）` : ''));
+if (BROWSER.auto) {
+  const found = listAvailableBrowsers();
+  info('浏览器：自动检测本机已安装的' + (found.length ? `（${found.map((b) => b.name).join(' / ')}）` : '（暂未检测到，稍后给出安装提示）'));
+} else {
+  info('浏览器：' + (BROWSER.prefer === 'firefox' ? 'Firefox' : 'Chromium 系') + (BROWSER.exe ? `（${BROWSER.exe}）` : ''));
+}
 const login = await ensureLogin();
 if (!login.ok) {
   warn('没有登录，无法继续。处理后在浏览器里登录，然后重新双击「一键开始.exe」。');

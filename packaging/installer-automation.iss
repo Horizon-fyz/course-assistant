@@ -3,7 +3,7 @@
 ; 安装到当前用户目录，不需要管理员权限。
 ;
 ; 分发内容只包含「程序本体 + 题库」，明确排除：
-;   browser-profile-edge\（本机登录态）、recon\（运行报告）、
+;   browser-profile-*\（本机登录态）、recon\（运行报告）、
 ;   个人抓取的 export\papers.json / courses-resolved.json、ms-playwright\。
 
 #define MyAppName "智慧树一键全自动"
@@ -11,6 +11,7 @@
   #define MyAppVersion "1.0.0"
 #endif
 #define MyAppExe "一键开始.exe"
+#define MyAppGui "智慧树课程助手.exe"
 #define SrcDir "..\dist\智慧树一键全自动"
 
 [Setup]
@@ -46,6 +47,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 Source: "{#SrcDir}\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SrcDir}\{#MyAppGui}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\设置AI密钥.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\runtime\node.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
@@ -60,8 +62,11 @@ Source: "{#SrcDir}\app\export\智慧树作业题库_打印版.answers.json"; Des
 Type: files; Name: "{app}\设置AI密钥.cmd"
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: desktopicon
+Name: "{autoprograms}\智慧树课程助手"; Filename: "{app}\{#MyAppGui}"
+Name: "{autodesktop}\智慧树课程助手"; Filename: "{app}\{#MyAppGui}"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}（命令行）"; Filename: "{app}\{#MyAppExe}"
+Name: "{autodesktop}\{#MyAppName}（命令行）"; Filename: "{app}\{#MyAppExe}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExe}"; Description: "立即运行 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppGui}"; Description: "立即运行 智慧树课程助手"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExe}"; Description: "运行 {#MyAppName}（命令行）"; Flags: postinstall nowait skipifsilent unchecked

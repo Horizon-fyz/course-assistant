@@ -8,7 +8,7 @@
 //
 // 安全保证：全程只「进入试卷读取题目」，绝不点击「提交作业」「暂存作业」；
 //          结束后自动复查每份作业的 state/backNum 是否仍为未提交状态。
-import { writeFileSync, mkdirSync, existsSync, writeSync, appendFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { connect, readyPage, tidy, HOME } from '../core/browser.mjs';
 import { PY } from '../core/python.mjs';
@@ -25,7 +25,7 @@ const LOGFILE = join(EXPORT, 'pipeline.log');
 try { writeFileSync(LOGFILE, ''); } catch {}
 const log = (m) => {
   const line = String(m);
-  try { writeSync(1, line + '\n'); } catch {}
+  try { process.stdout.write(line + '\n'); } catch {}
   try { appendFileSync(LOGFILE, line + '\n', 'utf8'); } catch {}
 };
 
@@ -361,15 +361,17 @@ for (const c of targets) {
 // ---------- 6) 安全复查 ----------
 log('\n[6] 安全复查（确认未提交、次数未消耗）…');
 let bad = 0, total = 0;
+// state 1 = 未提交；state 5 = 退回重做（申请重做后平台改成的状态），两者都可作答
+const answerable = (x) => (x.state === 1 || x.state === 5) && x.backNum === 3 && x.score === null;
 for (const c of targets) {
   if (!c.listRid) continue;
   const items = await fetchHomework(examPage, c.listRid);
   for (const x of items) {
     total++;
-    const ok = x.state === 1 && x.backNum === 3 && x.score === null;
+    const ok = answerable(x);
     if (!ok) { bad++; log(`     ⚠️ ${c.courseName} / ${x.examName}: state=${x.state} backNum=${x.backNum} score=${x.score}`); }
   }
-  log(`     ${c.courseName}: ${items.length} 份，异常 ${items.filter((x) => !(x.state === 1 && x.backNum === 3 && x.score === null)).length} 份`);
+  log(`     ${c.courseName}: ${items.length} 份，异常 ${items.filter((x) => !answerable(x)).length} 份`);
 }
 log(`\n     总计 ${total} 份作业，异常 ${bad} 份  ${bad === 0 ? '✅ 全部未提交' : '⚠️ 需人工核查'}`);
 

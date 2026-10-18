@@ -58,7 +58,7 @@ function parseTime(s) {
   const t = Date.parse(String(s).replace(' ', 'T'));
   return Number.isFinite(t) ? t : null;
 }
-const isPending = (hw) => Number(hw?.state) === 1 && hw?.score == null;
+const isPending = (hw) => (Number(hw?.state) === 1 || Number(hw?.state) === 5) && hw?.score == null;
 const hwKey = (course, hw) => `${course}|${hw.id}|${hw.examId}`;
 const hwLabel = (hw) => `${hw.courseName || ''} / ${hw.examName || hw.id}`.replace(/^ \/ /, '');
 

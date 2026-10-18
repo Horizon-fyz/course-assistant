@@ -306,15 +306,45 @@ async function playerPoint(page) {
 /** 只做安全的静音（实测 JS 改 muted 不触发风控） */
 async function muteVideo(page) {
   await page.evaluate(() => {
-    const v = document.querySelector('video.vjs-tech') || document.querySelector('video');
-    if (!v) return;
-    v.muted = true;
-    try { v.volume = 0; } catch { /* 忽略 */ }
+    document.querySelectorAll('video,audio').forEach((v) => {
+      v.muted = true;
+      try { v.volume = 0; } catch { /* 忽略 */ }
+    });
   }).catch(() => {});
+}
+
+/**
+ * 常驻静音守卫：切换课节会重建播放器、站点也可能自己取消静音，
+ * 这里监听 play / volumechange 和新节点，统一压回 muted（默认静音看课）。
+ */
+function muteGuard() {
+  if (window.__zhsMuteGuard) return;
+  window.__zhsMuteGuard = true;
+  const mute = (el) => {
+    if (!el || !('muted' in el)) return;
+    if (!el.muted) el.muted = true;
+    if (el.volume !== 0) { try { el.volume = 0; } catch { /* 忽略 */ } }
+  };
+  const all = () => document.querySelectorAll('video,audio').forEach(mute);
+  let queued = false;
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    setTimeout(() => { queued = false; all(); }, 150);
+  };
+  document.addEventListener('play', (e) => mute(e.target), true);
+  document.addEventListener('volumechange', (e) => mute(e.target), true);
+  new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
+  all();
+}
+
+async function installMuteGuard(page) {
+  await page.evaluate(muteGuard).catch(() => {});
 }
 
 /** 用真实点击开始/恢复播放；禁止 JS play() */
 async function ensurePlaying(page, tries = 3) {
+  await installMuteGuard(page);
   let st = await page.evaluate(READ_VIDEO).catch(() => null);
   if (st && !st.paused && !st.ended) return st;
   await muteVideo(page);
@@ -909,6 +939,7 @@ for (const { name: course, entry } of courseList) {
   stamp(`   ${url}`);
 
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+  await installMuteGuard(page);
   let lessons = [];
   for (let i = 0; i < 40; i++) {
     lessons = await page.evaluate(READ_LESSONS).catch(() => []);
@@ -924,16 +955,25 @@ for (const { name: course, entry } of courseList) {
   await dismissTips(page);
   stamp(`  课节 ${lessons.length} 个`);
 
+  // 编号精确匹配优先（如 1.3），否则回退「序号 + 标题」包含匹配
+  const matchLesson = (l, q) => (l.no === q ? true : `${l.no} ${l.title}`.includes(q));
+  const lessonExact = LESSON && lessons.some((l) => l.no === LESSON);
+
   let fromIdx = -1;
   if (FROM) {
-    fromIdx = lessons.findIndex((x) => `${x.no} ${x.title}`.includes(FROM));
+    fromIdx = lessons.findIndex((x) => x.no === FROM);
+    if (fromIdx < 0) fromIdx = lessons.findIndex((x) => `${x.no} ${x.title}`.includes(FROM));
     if (fromIdx < 0) stamp(`  ⚠️ --from ${FROM} 未匹配到任何课节，按全部课节处理`);
   }
   const filtered = lessons.filter((l) => {
-    if (LESSON && !(`${l.no} ${l.title}`.includes(LESSON))) return false;
+    if (LESSON) {
+      const hit = lessonExact ? l.no === LESSON : matchLesson(l, LESSON);
+      if (!hit) return false;
+    }
     if (FROM && fromIdx >= 0 && l.i < fromIdx) return false;
     return true;
   });
+  if (LESSON && !filtered.length) stamp(`  ⚠️ --lesson ${LESSON} 未匹配到任何课节`);
   const queue = MAX > 0 ? filtered.slice(0, MAX) : filtered;
   stamp(`  本次处理 ${queue.length} 节`);
 

@@ -7,7 +7,7 @@
 #
 # 设计：
 #   · 自带 node.exe（runtime\node.exe），对方电脑不需要安装 Node.js
-#   · 只带 playwright / playwright-core，浏览器用系统自带 Edge，不下载浏览器
+#   · 只带 playwright / playwright-core，不下载浏览器；运行时自动检测「目标电脑」已装的浏览器
 #   · 附带题库（export\...answers.json），不包含任何个人登录态、作业数据、API Key
 #
 # 用法：
@@ -42,7 +42,7 @@ $need = @(
   'md-ai-answer\src',
   'node_modules\playwright', 'node_modules\playwright-core',
   'export\智慧树作业题库_打印版.answers.json',
-  'tools\launcher.cs', 'tools\setup-ai.cs',
+  'tools\launcher.cs', 'tools\setup-ai.cs', 'desktop\native\CourseHelper.cs',
   'packaging\使用说明.txt', 'packaging\config.automation.json'
 )
 $missing = @($need | Where-Object { -not (Test-Path (Join-Path $Root $_)) })
@@ -133,7 +133,7 @@ Step 'md-ai-answer\config.json（模板，apiKey 留空）'
 Copy-Item (Join-Path $Root 'packaging\使用说明.txt') $AppDir -Force
 Step '使用说明.txt'
 
-Head '编译启动器与设置工具'
+Head '编译启动器、图形界面与设置工具'
 & $Csc /nologo /codepage:65001 /target:exe /platform:anycpu /optimize+ /out:"$AppDir\一键开始.exe" (Join-Path $Root 'tools\launcher.cs')
 if ($LASTEXITCODE -ne 0) { throw "编译失败（csc 退出码 $LASTEXITCODE）" }
 Step ("一键开始.exe : " + [math]::Round((Get-Item (Join-Path $AppDir '一键开始.exe')).Length / 1KB) + " KB")
@@ -141,6 +141,10 @@ Step ("一键开始.exe : " + [math]::Round((Get-Item (Join-Path $AppDir '一键
 & $Csc /nologo /codepage:65001 /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /out:"$AppDir\设置AI密钥.exe" (Join-Path $Root 'tools\setup-ai.cs')
 if ($LASTEXITCODE -ne 0) { throw "编译失败（csc 退出码 $LASTEXITCODE）" }
 Step ("设置AI密钥.exe : " + [math]::Round((Get-Item (Join-Path $AppDir '设置AI密钥.exe')).Length / 1KB) + " KB")
+
+& $Csc /nologo /codepage:65001 /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /out:"$AppDir\智慧树课程助手.exe" (Join-Path $Root 'desktop\native\CourseHelper.cs')
+if ($LASTEXITCODE -ne 0) { throw "编译失败（csc 退出码 $LASTEXITCODE）" }
+Step ("智慧树课程助手.exe : " + [math]::Round((Get-Item (Join-Path $AppDir '智慧树课程助手.exe')).Length / 1KB) + " KB")
 
 Head '打包便携版 zip'
 $Zip = Join-Path $Dist "智慧树一键全自动-便携版-$Version.zip"

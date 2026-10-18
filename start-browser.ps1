@@ -1,7 +1,7 @@
 ﻿# 启动智慧树自动化浏览器
 #
 # 用法：
-#   .\start-browser.ps1                      # 默认 Edge/Chrome（CDP 接管，已验证可过易盾验证码）
+#   .\start-browser.ps1                      # 自动检测本机已装的浏览器（CDP 接管，已验证可过易盾验证码）
 #   .\start-browser.ps1 -Browser firefox     # Firefox（Playwright 自带构建）
 #
 # 为什么要这样启动：
@@ -32,8 +32,24 @@ if ($Browser -eq 'firefox') {
 }
 
 # ---------- Chromium 系分支 ----------
+# 浏览器列表交给 Node 侧同一套探测逻辑（常见路径 / 注册表 / PATH / Playwright 自带），
+# 保证「这台电脑装了什么就用什么」，不在脚本里预设品牌。
+Push-Location $root
+try {
+  $listJson = node --input-type=module -e "import { discoverChromium } from './src/core/browser.mjs'; process.stdout.write(JSON.stringify(discoverChromium()))"
+  if ($LASTEXITCODE -ne 0) { throw '浏览器探测失败（node_modules\playwright 是否已安装？）' }
+  $list = @($listJson | ConvertFrom-Json)
+} finally { Pop-Location }
+
+$pool = @(if ($Browser -eq 'auto') { $list } else { $list | Where-Object { $_.name -eq $Browser } })
+if (-not $pool.Count) {
+  throw ("这台电脑上没有检测到可用的 Chromium 系浏览器（当前筛选：$Browser）。装一个即可，或用 -Browser firefox。")
+}
+
+$ports = @($list | ForEach-Object { $_.port }) + 9222 + 9223 | Select-Object -Unique
+
 function Find-CdpPort {
-  foreach ($port in 9222, 9223) {
+  foreach ($port in $ports) {
     try {
       $v = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/version" -TimeoutSec 3
       return @{ Port = $port; Version = $v.Browser }
@@ -49,27 +65,7 @@ if ($live) {
   exit 0
 }
 
-$candidates = @()
-if ($Browser -in @('auto', 'edge')) {
-  $candidates += @{ Name = 'edge'; Port = 9222; Exe = @(
-    "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
-    "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") }
-}
-if ($Browser -in @('auto', 'chrome')) {
-  $candidates += @{ Name = 'chrome'; Port = 9223; Exe = @(
-    "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-    "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") }
-}
-
-$picked = $null
-foreach ($c in $candidates) {
-  foreach ($e in $c.Exe) {
-    if (Test-Path $e) { $picked = @{ Name = $c.Name; Port = $c.Port; Exe = $e }; break }
-  }
-  if ($picked) { break }
-}
-if (-not $picked) { throw '未找到 Edge/Chrome 可执行文件' }
+$picked = @{ Name = $pool[0].name; Port = $pool[0].port; Exe = $pool[0].exePath }
 
 $profile = "$root\browser-profile-$($picked.Name)"
 New-Item -ItemType Directory -Force -Path $profile | Out-Null

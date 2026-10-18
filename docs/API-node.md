@@ -7,7 +7,7 @@
 
 | 模块 | 导出 | 用途 |
 |---|---|---|
-| `src/core/browser.mjs` | `HOME` `findChromium` `cdpAlive` `findLiveCdp` `ensureChromium` `connect` `findPage` `readyPage` `tidy` `focusWindow` `waitContent` | 浏览器抽象层（Edge CDP / Firefox 持久化 profile） |
+| `src/core/browser.mjs` | `HOME` `discoverChromium` `listAvailableBrowsers` `findChromium` `cdpAlive` `findLiveCdp` `ensureChromium` `connect` `findPage` `readyPage` `tidy` `focusWindow` `waitContent` | 浏览器抽象层（自动发现本机浏览器 → Chromium 走 CDP / Firefox 走 BiDi） |
 | `src/core/login-flow.mjs` | `LOGIN_URL` `API_USERINFO` `loadAccount` `checkLogin` `captchaVisible` `fillLoginForm` `ensureLoggedIn` | 登录公共逻辑（学校下拉框等易错点集中在此） |
 | `src/core/accounts.mjs` | `STORE` `LEGACY` `FIELD_ALIASES` `normalizeAccount` `resolveAccount` `saveAccount` `importAccount` `exportAccount` `harden` `mask` `fieldHelp` | 凭据解析：多来源、字段别名归一、导入导出、权限收紧 |
 | `src/core/prompt.mjs` | `askLine` `askSecret` | 交互式读取输入（TTY 隐藏回显；管道可用） |
@@ -25,12 +25,25 @@ import { HOME } from './src/core/browser.mjs';
 // HOME = 'https://onlineweb.zhihuishu.com/onlinestuh5'   学生端首页
 ```
 
-### `findChromium()`
+### `discoverChromium({ refresh = false })`
 
-探测本机可用的 Chromium 系浏览器。
+枚举本机**真实存在**的 Chromium 系浏览器：常见安装位置 + 注册表（App Paths / Uninstall DisplayIcon）+ `PATH` + Playwright 自带 Chromium（`PLAYWRIGHT_BROWSERS_PATH` / `%LOCALAPPDATA%\ms-playwright` / 项目内 `ms-playwright`）。结果在进程内缓存。
 
-- **返回**：`{ name, port, channel, exe, exePath } | null`（`name` 为 `'edge'` | `'chrome'`；`port` 为 `9222` | `9223`）
-- **副作用**：无
+- **返回**：`{ name, exePath, port, source }[]`；没有任何已安装浏览器时为 `[]`
+- **排序**：已有 profile（登录态）→ 系统默认浏览器 → 发现顺序
+
+### `listAvailableBrowsers()`
+
+`discoverChromium()` 的可读版本，并追加 Firefox。
+
+- **返回**：`{ kind: 'chromium'|'firefox', name, exe, port, source }[]`
+
+### `findChromium(explicitExe?)`
+
+在本机实际安装的浏览器里挑一个；传了 `explicitExe` 就认准它。
+
+- **返回**：`{ name, port, exePath, source } | null`（`name` 如 `'edge'` / `'chrome'` / `'brave'` / `'playwright-chromium'` / `'custom'`）
+- **副作用**：无（只读写注册表与文件系统进行探测）
 
 ### `cdpAlive(port, timeoutMs = 2500)`
 
@@ -40,7 +53,7 @@ import { HOME } from './src/core/browser.mjs';
 
 ### `findLiveCdp()`
 
-遍历候选端口，找第一个存活的 CDP。
+并发探测所有已知调试端口，找已经在运行的 CDP 实例（复用已登录的浏览器）。
 
 - **返回**：`Promise<{ browser, port, version } | null>`
 

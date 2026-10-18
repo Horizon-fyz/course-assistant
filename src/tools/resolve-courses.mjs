@@ -3,14 +3,14 @@
 //
 // 关键事实：queryShareCourseInfo 会直接返回每门课的 secret（= recruitAndCourseId），
 // 所以「视频页参数」可完全自动获取；只有考试页的 listRid 需要实地捕获。
-import { mkdirSync, writeSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { connect, readyPage, HOME } from '../core/browser.mjs';
 import { join } from 'node:path';
 import { DATA_DIR, readJson, writeJson, findCourse } from '../core/store.mjs';
 
 const CACHE = join(DATA_DIR, 'courses-resolved.json');
 mkdirSync(DATA_DIR, { recursive: true });
-const log = (m) => { try { writeSync(1, m + '\n'); } catch { console.log(m); } };
+const log = (m) => { try { process.stdout.write(m + '\n'); } catch { console.log(m); } };
 
 /** 精确定位课程卡片：先按课程名 + 教师名匹配，同名课程不会再串 */
 async function courseLocator(page, c) {
