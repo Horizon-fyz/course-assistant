@@ -42,6 +42,8 @@ $need = @(
   'md-ai-answer\src',
   'node_modules\playwright', 'node_modules\playwright-core',
   'export\智慧树作业题库_打印版.answers.json',
+  'recon\login-and-persist.mjs', 'recon\make-md.mjs', 'recon\make-pdf.mjs',
+  'recon\validate-data.mjs', 'recon\verify-md.mjs',
   'tools\launcher.cs', 'tools\setup-ai.cs', 'desktop\native\CourseHelper.cs',
   'packaging\使用说明.txt', 'packaging\config.automation.json'
 )
@@ -123,7 +125,13 @@ foreach ($m in 'playwright', 'playwright-core') {
 
 New-Item -ItemType Directory -Force -Path (Join-Path $App 'export') | Out-Null
 Copy-Item (Join-Path $Root 'export\智慧树作业题库_打印版.answers.json') (Join-Path $App 'export') -Force
-Step 'start.mjs / zhs.mjs / src / md-ai-answer / node_modules / 题库'
+
+# recon 下的运行期脚本：登录固化、Markdown/PDF 生成、数据校验
+New-Item -ItemType Directory -Force -Path (Join-Path $App 'recon') | Out-Null
+foreach ($f in 'login-and-persist.mjs', 'make-md.mjs', 'make-pdf.mjs', 'validate-data.mjs', 'verify-md.mjs') {
+  Copy-Item (Join-Path $Root "recon\$f") (Join-Path $App 'recon') -Force
+}
+Step 'start.mjs / zhs.mjs / src / recon / md-ai-answer / node_modules / 题库'
 
 # AI 配置模板：始终取仓库模板（apiKey 为空），不读取任何本机已填写的配置，
 # 避免把开发者的密钥打进 zip / 安装包。

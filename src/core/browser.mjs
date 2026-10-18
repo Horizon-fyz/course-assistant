@@ -214,11 +214,74 @@ function profileOf(name) {
   return (existsSync(fixed) || !legacy) ? fixed : legacy;
 }
 
+/** 运行中检测只认这些进程名（浏览器主进程/子进程都可能出现，后面按命令行去重取端口） */
+const RUNNING_NAMES = [
+  'msedge.exe', 'chrome.exe', 'chromium.exe', 'brave.exe', 'vivaldi.exe', 'opera.exe',
+  '360se.exe', '360chrome.exe', 'qqbrowser.exe', 'sogouexplorer.exe', 'maxthon.exe',
+  'firefox.exe', 'browser.exe',
+];
+
+let runningCache = { at: 0, list: [] };
+
+/**
+ * 枚举本机「正在运行」的浏览器进程。
+ * 用途：
+ *   1. 发现已经打开、且带 --remote-debugging-port 的浏览器 → 直接接管（登录态就在那个窗口里）；
+ *   2. 发现装在非常规目录（便携版、自定义安装路径）的浏览器 → 补进发现列表。
+ * 只有 Windows 有 CIM；其它平台返回空数组。结果缓存 4 秒。
+ * @returns {{name:string, exe:string|null, pid:number, port:number|null, userDataDir:string|null, own:boolean}[]}
+ */
+export function runningBrowsers({ refresh = false } = {}) {
+  if (process.platform !== 'win32') return [];
+  if (!refresh && Date.now() - runningCache.at < 4000) return runningCache.list;
+
+  const ps = `
+$ErrorActionPreference='SilentlyContinue'
+[Console]::OutputEncoding=[Text.Encoding]::UTF8
+$names = @('${RUNNING_NAMES.join("','")}')
+Get-CimInstance Win32_Process | Where-Object { $names -contains $_.Name.ToLower() } |
+  Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress
+`;
+  const list = [];
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      encoding: 'utf8', timeout: 12000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let rows = JSON.parse(String(out || '').replace(/^\uFEFF/, '').trim() || '[]');
+    if (!Array.isArray(rows)) rows = [rows];
+    for (const p of rows) {
+      const exe = p.ExecutablePath || null;
+      const name = (exe && classify(exe)) || classify(String(p.Name || '')) || null;
+      if (!name) continue;
+      const cmd = String(p.CommandLine || '');
+      const port = Number((cmd.match(/--remote-debugging-port(?:=|\s+)(\d{2,5})/i) || [])[1]) || null;
+      // --user-data-dir 可能带引号：三种写法都兼容
+      const ud = (cmd.match(/--user-data-dir(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s"]+))/i) || []).slice(1).find(Boolean) || null;
+      list.push({
+        name, exe, pid: Number(p.ProcessId) || 0, port, userDataDir: ud,
+        own: !!(ud && ud.toLowerCase().startsWith(BASE.toLowerCase())),
+      });
+    }
+  } catch { /* 查不到就当没有运行中的浏览器 */ }
+
+  // 浏览器会为每个渲染进程/内容进程复制同一份命令行，这里按「浏览器 + 端口 + 用户目录」去重
+  const seen = new Set();
+  const uniq = list.filter((b) => {
+    const key = `${b.name}|${b.exe}|${b.port}|${b.userDataDir}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  runningCache = { at: Date.now(), list: uniq };
+  return uniq;
+}
+
 let discoverCache = null;
 
 /**
  * 枚举本机「真实存在」的 Chromium 系浏览器。
- * 不预设品牌顺序：只有文件确实存在才会进列表；排序只按「有没有登录态 → 是不是系统默认」。
+ * 不预设品牌顺序：只有文件确实存在才会进列表；排序按「可接管的运行中实例 → 有登录态 → 系统默认 → Edge 最后」。
  * @returns {{name: string, exePath: string, port: number, source: string}[]}
  */
 export function discoverChromium({ refresh = false } = {}) {
@@ -239,14 +302,46 @@ export function discoverChromium({ refresh = false } = {}) {
   for (const key of UNINSTALL_KEYS) for (const p of exePathsFromReg(reg(['query', key, '/s', '/v', 'DisplayIcon']))) add(p, 'registry');
   for (const p of fromPathEnv()) add(p, 'PATH');
   for (const p of playwrightChromium()) add(p, 'playwright');
+  // 运行中的浏览器：补上便携版/自定义安装目录（注册表里查不到的）
+  for (const b of runningBrowsers()) if (b.exe) add(b.exe, 'running');
 
   const def = defaultBrowserExe();
-  // 只在「已经有多个可用浏览器」时决定先用哪个：登录态 > 系统默认 > 发现顺序（sort 稳定）
-  const rank = (b) => (existsSync(profileOf(b.name)) ? 0 : (def && b.exePath.toLowerCase() === def.toLowerCase() ? 1 : 2));
+  const running = runningBrowsers();
+  const live = new Map(running.map((b) => [b.name, b]));
+  // Edge 只是兜底（Windows 自带，永远能检测到），只有没装任何其它浏览器时才用；
+  // 其它浏览器之间：带调试端口的运行中实例 > 登录态 > 运行中 > 系统默认 > 发现顺序（sort 稳定）
+  const rank = (b) => {
+    if (b.name === 'edge') return 5;
+    const r = live.get(b.name);
+    if (r?.port) return 0;
+    if (existsSync(profileOf(b.name))) return 1;
+    if (r) return 2;
+    return (def && b.exePath.toLowerCase() === def.toLowerCase()) ? 3 : 4;
+  };
   list.sort((a, b) => rank(a) - rank(b));
 
   discoverCache = list;
   return list;
+}
+
+/**
+ * 自动选择浏览器种类（不指定 --browser 时的默认策略）：
+ *   1. 正在运行、且带调试端口的非 Edge Chromium 系 → 直接接管（登录态就在这个窗口里）
+ *   2. 正在运行、带调试端口的 Firefox（通常已登录智慧树）
+ *   3. 任意已安装的「非 Edge」Chromium 系浏览器（Chrome / Brave / 360 / QQ …，含便携版）
+ *   4. 本机安装的 Firefox
+ *   5. 都没有才退回 Edge
+ * @returns {'chromium'|'firefox'}
+ */
+export function autoPrefer() {
+  const running = runningBrowsers();
+  const isChromium = (b) => b.name !== 'edge' && b.name !== 'firefox';
+  if (running.some((b) => isChromium(b) && b.port)) return 'chromium';
+  // 运行中的 Firefox 往往已经登录过智慧树，优先于「装了但可能没登录」的 Chromium
+  if (running.some((b) => b.name === 'firefox' && b.port)) return 'firefox';
+  if (discoverChromium().some((b) => b.name !== 'edge')) return 'chromium';
+  if (findFirefox() || running.some((b) => b.name === 'firefox' && b.exe)) return 'firefox';
+  return 'chromium'; // 只剩 Edge（或什么都没有，交给 connect 报安装提示）
 }
 
 /**
@@ -282,30 +377,79 @@ export async function cdpAlive(port, timeoutMs = 2500) {
   } catch { return null; }
 }
 
-/** 找已经在跑的调试实例（端口固定，所以探测端口就够了；并发探，避免串行等待） */
-export async function findLiveCdp() {
-  const ports = [];
-  const push = (name, port) => { if (!ports.some((p) => p.port === port)) ports.push({ name, port }); };
-  for (const b of discoverChromium()) push(b.name, b.port);
-  for (const [name, port] of Object.entries(PORTS)) if (name !== 'firefox') push(name, port);
-  push('custom', CUSTOM_PORT);
+/** 端口上是否已经打开智慧树页面（决定「接管哪个窗口」：登录态就在这个窗口里） */
+async function cdpHasTarget(port, timeoutMs = 2000) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return false;
+    const list = await res.json();
+    return Array.isArray(list) && list.some((t) => t.type === 'page' && /zhihuishu\.com/.test(String(t.url || '')));
+  } catch { return false; }
+}
 
-  const hits = await Promise.all(ports.map(async (p) => {
-    const v = await cdpAlive(p.port);
-    return v ? { browser: p.name, port: p.port, version: v } : null;
+/**
+ * 找已经在跑的 CDP 实例。
+ * 候选来源（优先级从高到低）：
+ *   1. 运行中的浏览器进程自己在命令行里声明的调试端口（用户手动开的 / 上次流程留下的，端口不固定也能发现）
+ *   2. 各浏览器固定端口（browser-profile-* 启动的实例）
+ *   3. 自定义调试端口 9231
+ * 多个都活着时：已经打开智慧树页面的非 Edge 实例 > 运行中的非 Edge 实例 > 其它。
+ * @param {{allowEdge?: boolean, excludePorts?: number[]}} [opts]
+ */
+export async function findLiveCdp({ allowEdge = true, excludePorts = [] } = {}) {
+  const byPort = new Map();
+  const push = (name, port, extra = {}, priority = 0) => {
+    if (!port) return;
+    const cur = byPort.get(port);
+    if (!cur || priority > cur.priority) byPort.set(port, { name, port, priority, ...extra });
+  };
+  for (const b of runningBrowsers()) push(b.name, b.port, { running: true, own: b.own, pid: b.pid }, 3);
+  for (const b of discoverChromium()) push(b.name, b.port, {}, 2);
+  for (const [name, port] of Object.entries(PORTS)) if (name !== 'firefox') push(name, port, {}, 1);
+  push('custom', CUSTOM_PORT, {}, 0);
+
+  const skip = new Set(excludePorts);
+  const candidates = [...byPort.values()].filter((p) => !skip.has(p.port) && (allowEdge || p.name !== 'edge'));
+
+  const hits = await Promise.all(candidates.map(async (p) => {
+    const version = await cdpAlive(p.port);
+    if (!version) return null;
+    return {
+      browser: p.name, port: p.port, version,
+      running: !!p.running, own: !!p.own, pid: p.pid,
+      hasTarget: await cdpHasTarget(p.port),
+    };
   }));
-  return hits.find(Boolean) || null;
+
+  const alive = hits.filter(Boolean);
+  const score = (h) => (h.browser === 'edge' ? 0 : 10) + (h.running ? 4 : 0) + (h.hasTarget ? 2 : 0);
+  // sort 稳定：同分时保留候选来源的先后（运行中 > 固定端口 > 自定义）
+  alive.sort((a, b) => score(b) - score(a));
+  return alive[0] || null;
 }
 
 /** 启动系统 Chromium 系浏览器的远程调试（幂等：已在运行则复用） */
 export async function ensureChromium({ headless = false, exe = null } = {}) {
   // 未指定可执行文件时才「谁在跑就用谁」；指定了就认准它
   if (!exe) {
-    const live = await findLiveCdp();
+    // 本机还有非 Edge 浏览器时，不复用残留的 Edge 实例（Edge 只作兜底）
+    const hasOther = discoverChromium().some((b) => b.name !== 'edge')
+      || runningBrowsers().some((b) => !['edge', 'firefox'].includes(b.name));
+    const live = await findLiveCdp({ allowEdge: !hasOther });
     if (live) return { ...live, started: false };
   }
 
   const c = findChromium(exe);
+
+  // 指定的浏览器可能早就被手动开着调试端口：优先接管那个实例（端口不固定也认）
+  if (exe && c) {
+    const same = runningBrowsers().find((b) => b.port && b.exe
+      && b.exe.toLowerCase() === c.exePath.toLowerCase());
+    if (same) {
+      const v = await cdpAlive(same.port);
+      if (v) return { browser: c.name, port: same.port, version: v, started: false };
+    }
+  }
   if (!c) {
     throw new Error([
       '没有检测到本机已安装的浏览器（已检查常见安装位置、注册表、PATH 以及 Playwright 自带的 Chromium）。',
@@ -352,13 +496,21 @@ export async function ensureChromium({ headless = false, exe = null } = {}) {
  * @returns {{kind, browserName, browser, ctx, describe, close}}
  */
 export async function connect({ prefer = 'chromium', exe = null, firefoxProfile = null, firefoxPort = FIREFOX_PORT } = {}) {
-  const kind = exe ? guessKind(exe) : (prefer === 'firefox' ? 'firefox' : 'chromium');
+  // 不指定 exe 时按统一优先级挑：非 Edge 的 Chromium 系 → Firefox → Edge（Edge 仅兜底）。
+  // 只有显式 prefer:'firefox' 才强制走 Firefox。
+  const kind = exe ? guessKind(exe) : (prefer === 'firefox' ? 'firefox' : autoPrefer());
 
   if (kind === 'firefox') {
+    // 已经打开的 Firefox 如果带调试端口，优先接管（登录态就在那个窗口里）；
+    // 没带端口的运行中 Firefox 接不了，只能另开一个实例，但可复用它的 exe（便携版也能找到）
+    const running = runningBrowsers();
+    const attachPorts = exe ? [] : running.filter((b) => b.name === 'firefox' && b.port).map((b) => b.port);
+    const runningExe = running.find((b) => b.name === 'firefox' && b.exe)?.exe;
     const launched = await launchFirefoxBidi({
-      exe: exe || undefined,
+      exe: exe || runningExe || undefined,
       profile: firefoxProfile || `${BASE}\\browser-profile-firefox`,
       port: firefoxPort,
+      attachPorts,
     });
     return await createFirefoxBrowser(launched);
   }

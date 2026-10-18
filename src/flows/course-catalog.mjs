@@ -17,8 +17,8 @@
 //   videolist 未捕获到时回退读取 DOM li.video，此时完成状态未知。
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { connect, tidy } from '../core/browser.mjs';
-import { DATA_DIR, writeJson } from '../core/store.mjs';
+import { connect, tidy, HOME } from '../core/browser.mjs';
+import { DATA_DIR, writeJson, findCourse } from '../core/store.mjs';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const EXPORT = DATA_DIR;
@@ -160,32 +160,170 @@ function printCourse(c) {
   }
 }
 
-/* ═══════════════════════ 主流程 ═══════════════════════ */
+const SIG_COURSE = 'NEuH3llD9woD4DQgu0k6Uvp5yyo8WT84Dq5lU2iPwvgKNatePzJ+vu/4PRaNYy+K';
+const LOGIN_RE = /login\.zhihuishu\.com/i;
 
-const resolved = readJson(join(EXPORT, 'courses-resolved.json'), {});
-const courseList = Object.entries(resolved)
-  .map(([key, v]) => ({
-    name: v?.courseName || key,
-    entry: v || {},
-  }))
-  .filter((c) => !COURSE || c.name.includes(COURSE));
+/**
+ * 从学生首页发现课程。
+ * 优先旁听页面自己发出的 queryShareCourseInfo 响应（签名由页面生成，最可靠）；
+ * 等不到再用固定签名直接请求兜底。
+ * @returns {Promise<{list:object[], unauthenticated:boolean}>}
+ */
+async function discoverCourses(page) {
+  const dtos = [];
+  let unauthenticated = false;
+  const onRes = async (res) => {
+    if (!res.url().includes('queryShareCourseInfo')) return;
+    try {
+      const j = await res.json();
+      const list = j?.result?.courseOpenDtos;
+      if (Array.isArray(list)) dtos.push(...list);
+    } catch { /* 非 JSON 忽略 */ }
+  };
 
-if (!courseList.length) {
-  log('没有匹配的课程，检查 --course / export\\courses-resolved.json');
-  process.exit(1);
+  page.on('response', onRes);
+  try {
+    await page.goto(HOME, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    // 未登录会被重定向到 login.zhihuishu.com，没必要再空等 20 秒
+    for (let i = 0; i < 20 && !dtos.length; i++) {
+      if (LOGIN_RE.test(page.url())) { unauthenticated = true; break; }
+      await sleep(1000);
+    }
+  } finally {
+    page.off('response', onRes);
+  }
+
+  if (!dtos.length && !unauthenticated) {
+    try {
+      const fallback = await page.evaluate(async (sig) => {
+        const r = await fetch('https://onlineservice-api.zhihuishu.com/gateway/t/v1/student/course/share/queryShareCourseInfo', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ secretStr: sig, date: Date.now(), pageNo: 1, pageSize: 100 }).toString(),
+        });
+        const j = await r.json().catch(() => null);
+        return { status: r.status, list: j?.result?.courseOpenDtos || [] };
+      }, SIG_COURSE);
+      if (fallback?.status === 401 || fallback?.status === 403) unauthenticated = true;
+      if (Array.isArray(fallback?.list)) dtos.push(...fallback.list);
+    } catch { /* 网络异常，交给调用方提示 */ }
+  }
+
+  const seen = new Set();
+  return {
+    list: dtos.filter((c) => {
+      const key = String(c?.courseId ?? c?.courseName ?? '');
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }),
+    unauthenticated,
+  };
 }
 
-log('══════════ 课程目录扫描 ══════════');
-log(`课程: ${courseList.map((c) => c.name).join('、')}`);
+/** 把发现的课程并入缓存（保留已有的 listRid 等字段） */
+function mergeCourses(resolved, dtos) {
+  const now = new Date().toISOString();
+  for (const c of dtos) {
+    const courseId = c?.courseId ?? null;
+    const courseName = String(c?.courseName || '').trim();
+    if (courseId == null && !courseName) continue;
+    const prev = findCourse(resolved, { courseId, courseName }) || {};
+    // 历史缓存里同一门课可能既有 courseId key 又有课程名 key（两个独立对象），
+    // 按 courseId/课程名找出所有同课程条目，统一收敛到一个 key，避免重复累积。
+    const sameCourse = (k, v) => {
+      if (!v || typeof v !== 'object') return false;
+      if (courseId != null && v.courseId != null) return String(v.courseId) === String(courseId);
+      return !!courseName && String(v.courseName || k).trim() === courseName;
+    };
+    const prevKeys = Object.keys(resolved).filter((k) => sameCourse(k, resolved[k]));
+    const key = (courseId != null ? String(courseId) : null) || prevKeys[0] || courseName;
+    for (const k of prevKeys) if (k !== key) delete resolved[k];
+    resolved[key] = {
+      courseName: courseName || prev.courseName || key,
+      secret: c?.secret || prev.secret || null,
+      listRid: prev.listRid || null,
+      courseId: courseId ?? prev.courseId ?? null,
+      recruitId: c?.recruitId ?? prev.recruitId ?? null,
+      teacherName: c?.teacherName || prev.teacherName || '',
+      updatedAt: now,
+    };
+  }
+}
 
-const { ctx, describe, close } = await connect({
-  prefer: getArg('--browser', 'chromium') === 'firefox' ? 'firefox' : 'chromium',
-  exe: getArg('--browser-exe'),
-});
+/* ═══════════════════════ 主流程 ═══════════════════════ */
+
+log('══════════ 课程目录扫描 ══════════');
+
+let ctx, describe, close;
+try {
+  ({ ctx, describe, close } = await connect({
+    prefer: getArg('--browser', 'chromium') === 'firefox' ? 'firefox' : 'chromium',
+    exe: getArg('--browser-exe'),
+  }));
+} catch (e) {
+  log(`浏览器启动/连接失败：${e?.message || e}`);
+  log('请检查：1) 是否已安装 Chrome / Firefox；2) 已打开的浏览器是否占用了调试端口；3) 关闭多余窗口后重试。');
+  process.exit(1);
+}
 log(`浏览器: ${describe}`);
 log('提示: 若提示未登录，请先运行 node zhs.mjs login');
 
-const page = ctx.pages().find((p) => p.url().includes('studyvideoh5')) ?? await ctx.newPage();
+const page = ctx.pages().find((p) => p.url().includes('studyvideoh5'))
+  ?? ctx.pages().find((p) => p.url().includes('zhihuishu.com'))
+  ?? await ctx.newPage();
+
+const resolved = readJson(join(EXPORT, 'courses-resolved.json'), {}) || {};
+const listCourses = () => {
+  const seen = new Set();
+  const out = [];
+  for (const [key, v] of Object.entries(resolved)) {
+    const name = v?.courseName || key;
+    const id = v?.courseId != null ? String(v.courseId) : name;
+    // 历史缓存里同一门课可能既有 courseId key 又有课程名 key，去重避免重复扫描
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (COURSE && !name.includes(COURSE)) continue;
+    out.push({ name, entry: v || {} });
+  }
+  return out;
+};
+
+let courseList = listCourses();
+
+// 新机器/新账号没有 courses-resolved.json（安装包不带个人数据），
+// 先自动从首页发现课程并补上 secret，否则扫描永远「没有匹配的课程」。
+if (!courseList.length || courseList.some((c) => !c.entry?.secret)) {
+  log('本地课程缓存不足，正在从首页自动发现课程…');
+  let found = { list: [], unauthenticated: false };
+  let probe;
+  try {
+    // 用临时标签页发现，避免把用户正在看的课程页导航走
+    probe = await ctx.newPage().catch(() => null);
+    found = await discoverCourses(probe || page);
+  } finally {
+    if (probe) await probe.close().catch(() => {});
+  }
+  if (found.list.length) {
+    mergeCourses(resolved, found.list);
+    writeJson(join(EXPORT, 'courses-resolved.json'), resolved);
+    log(`已保存 ${found.list.length} 门课程到 export\\courses-resolved.json`);
+    for (const c of found.list) log(`  · ${c.courseName || c.courseId}${c.secret ? '' : '（缺少 secret）'}`);
+    courseList = listCourses();
+  } else if (found.unauthenticated) {
+    log('浏览器里的账号尚未登录智慧树：请先点「登录」完成登录，再重试「刷新目录」。');
+  }
+}
+
+if (!courseList.length) {
+  log('没有匹配的课程，检查 --course / export\\courses-resolved.json');
+  log('若首页确实有课程：请确认浏览器里的账号已登录，然后重试「刷新目录」。');
+  await tidy(ctx).catch(() => {});
+  await close();
+  process.exit(1);
+}
+
+log(`课程: ${courseList.map((c) => c.name).join('、')}`);
 
 // 切课时平台可能弹「离开当前学习」确认；只放行非危险文案，避免导航被取消
 const DIALOG_DENY_RE = /删除|清空|退出登录|注销|放弃|作废/;

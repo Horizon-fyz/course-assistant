@@ -67,6 +67,7 @@ export class BidiConnection {
     this.pending = new Map();
     this.listeners = new Map();
     this.closed = false;
+    this.closing = false;
     this.collector = null;
     /** 已订阅的事件名 */
     this.subscribed = new Set();
@@ -214,11 +215,34 @@ export class BidiConnection {
    * 断开接管，把窗口留给用户；下一个阶段还能重新接回来）。
    */
   close({ quitBrowser = false } = {}) {
-    if (quitBrowser) {
-      try { this.send('browser.close', {}, 3000).catch(() => {}); } catch { /* ignore */ }
-    }
-    setTimeout(() => { try { this.ws.close(); } catch { /* ignore */ } }, quitBrowser ? 600 : 0);
-    this.closed = true;
+    if (this.closing) return this._closePromise || Promise.resolve();
+    this.closing = true;
+    this._closePromise = new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        this.closed = true;
+        setTimeout(() => {
+          try { this.ws.close(); } catch { /* ignore */ }
+          resolve();
+        }, quitBrowser ? 600 : 0);
+      };
+      if (quitBrowser) {
+        try { this.send('browser.close', {}, 3000).catch(() => {}); } catch { /* ignore */ }
+        finish();
+        return;
+      }
+      // 只关 WebSocket 时 Firefox 会保留会话，下一个进程再连就会报
+      // "Maximum number of active sessions"（登录后紧接着扫描目录时必现），
+      // 所以要显式结束会话再断开；调用方必须 await 本方法，否则进程会先退出。
+      try {
+        this.send('session.end', {}, 2000).then(finish, finish);
+      } catch {
+        finish();
+      }
+    });
+    return this._closePromise;
   }
 }
 
@@ -255,6 +279,11 @@ export function findFirefox() {
     join(LOCAL, 'Mozilla Firefox', 'firefox.exe'),
   ];
   return cands.find((p) => p && existsSync(p)) || firefoxFromRegistry();
+}
+
+/** 是否为工具自己管理的 profile（browser-profile-*），只有这些才能安全强杀 */
+function isOwnProfile(profileDir) {
+  return /[\\/]browser-profile-[^\\/]+$/.test(String(profileDir || ''));
 }
 
 /** 结束占用指定 profile 的残留 firefox 进程（避免 profile 被锁），返回被终止的 PID */
@@ -334,20 +363,21 @@ async function tryAttach(port) {
     conn = await BidiConnection.open(`ws://127.0.0.1:${port}/session`, { timeoutMs: 12000 });
     // 端口可能被别的程序占用；只接管真正的 Firefox，避免把陌生会话当自己的浏览器
     if (String(conn.capabilities?.browserName || '').toLowerCase() !== 'firefox') {
-      conn.close();
+      await conn.close().catch(() => {});
       return null;
     }
     return await prepare(conn);
   } catch {
-    try { conn?.close(); } catch { /* ignore */ }
+    if (conn) await conn.close().catch(() => {});
     return null;
   }
 }
 
 /**
  * 启动系统 Firefox 并用 BiDi 接管。
- * @param {{exe?:string, profile?:string, port?:number, fresh?:boolean, extraPrefs?:string[]}} opts
- * @returns {Promise<{conn:BidiConnection, port:number, profile:string, exe:string, describe:string, close:()=>void}>}
+ * @param {{exe?:string, profile?:string, port?:number, fresh?:boolean, extraPrefs?:string[], attachPorts?:number[]}} opts
+ *   attachPorts：额外尝试接管的端口（运行中的 Firefox 自己声明的调试端口，可能在任意端口上）
+ * @returns {Promise<{conn:BidiConnection, port:number, profile:string, exe:string, describe:string, close:()=>Promise<void>}>}
  */
 export async function launchFirefoxBidi(opts = {}) {
   const exe = opts.exe || findFirefox();
@@ -355,22 +385,29 @@ export async function launchFirefoxBidi(opts = {}) {
 
   const profile = opts.profile || join(process.cwd(), 'browser-profile-firefox');
   const port = opts.port ?? 9224;
+  const ownProfile = isOwnProfile(profile);
 
   // 已在运行就接回去：一键流程的每个阶段都是独立进程，
   // 如果每次都重启 Firefox，登录现场和正在播放的视频都会丢。
+  // 先试运行中进程自己声明的端口（可能是用户手动开的、不在默认 9224 上），再试默认端口。
   if (!opts.fresh) {
-    const attached = await tryAttach(port);
-    if (attached) {
-      const close = () => { try { attached.close(); } catch { /* ignore */ } };
-      return {
-        conn: attached, port, profile, exe,
-        describe: `firefox @ BiDi ${port} (${attached.capabilities?.browserVersion || '?'}, 复用已开窗口)`,
-        close,
-      };
+    const tryPorts = [...new Set([...(opts.attachPorts || []), port])];
+    for (const p of tryPorts) {
+      const attached = await tryAttach(p);
+      if (attached) {
+        const close = () => { try { return attached.close(); } catch { return Promise.resolve(); } };
+        return {
+          conn: attached, port: p, profile, exe,
+          describe: `firefox @ BiDi ${p} (${attached.capabilities?.browserVersion || '?'}, 复用已开窗口)`,
+          close,
+        };
+      }
     }
   }
 
-  const stale = killFirefoxByProfile(profile);
+  // 只有工具自己的 profile 才能强杀；--firefox-profile 指向用户日常 profile 时
+  // 强杀会丢未保存数据，改为等端口超时后提示用户手动关闭。
+  const stale = ownProfile ? killFirefoxByProfile(profile) : { killed: [] };
   if (stale.killed.length) {
     console.warn(`已结束占用 Firefox 配置目录的残留进程：${stale.killed.join(', ')}`);
   }
@@ -394,13 +431,14 @@ export async function launchFirefoxBidi(opts = {}) {
 
   const aborted = () => (spawnErr ? new Error(`启动 Firefox 失败：${spawnErr.message}`) : null);
   if (!await waitPort(port, 40000, aborted)) {
-    killFirefoxByProfile(profile);
-    throw new Error(`Firefox 调试端口 ${port} 启动超时（profile: ${profile}）`);
+    if (ownProfile) killFirefoxByProfile(profile);
+    throw new Error(`Firefox 调试端口 ${port} 启动超时（profile: ${profile}）`
+      + (ownProfile ? '' : '；该 profile 可能正被已打开的 Firefox 占用，请先关闭它或使用默认 profile'));
   }
 
   const conn = await prepare(await BidiConnection.open(`ws://127.0.0.1:${port}/session`));
 
-  const close = () => { conn.close(); };
+  const close = () => conn.close();
   return {
     conn, port, profile, exe,
     describe: `firefox @ BiDi ${port} (${conn.capabilities.browserVersion || '?'})`,

@@ -3,11 +3,18 @@
 // 背景：智慧树的 CAS 票据（CASTGC / SESSION / polymas-token 等）是 session cookie，
 // 浏览器一关就丢，导致「登录一次长期有效」失效。这里登录后显式把关键 Cookie
 // 重新写回带远未来过期时间的持久 Cookie，重启浏览器也不会丢。
-import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { connect } from '../src/core/browser.mjs';
-import { ensureLoggedIn, loadAccount, checkLogin } from '../src/core/login-flow.mjs';
+import { ensureLoggedIn, loadAccount, checkLogin, LOGIN_URL } from '../src/core/login-flow.mjs';
+
+const ROOT = join(import.meta.dirname, '..');
+const SESSION_DIR = join(ROOT, 'session');
+const SHOT_DIR = join(SESSION_DIR, 'persist-login');
+const STATE_FILE = join(SESSION_DIR, 'storage-state.json');
 
 const KEEP_DAYS = 30;
+const MANUAL_WAIT_MS = 8 * 60_000;
 const KEY_RE = /SESSION|CASTGC|jt-cas|polymas-token|JSESSIONID|INGRESSCOOKIE|route-ingress|SERVERID|ai-poly|o_session_id|CASLOGC/i;
 
 const persistOnly = process.argv.includes('--persist-only');
@@ -19,7 +26,8 @@ const prefer = argOf('--browser', 'chromium') === 'firefox' ? 'firefox' : 'chrom
 const browserExe = argOf('--browser-exe');
 const firefoxProfile = argOf('--firefox-profile');
 
-const { ctx, describe } = await connect({ prefer, exe: browserExe, firefoxProfile });
+const { ctx, describe, kind } = await connect({ prefer, exe: browserExe, firefoxProfile });
+const usingFirefox = kind === 'bidi';
 console.log('浏览器:', describe);
 
 const page = ctx.pages().find((p) => /zhihuishu\.com/.test(p.url())) ?? (await ctx.newPage());
@@ -29,9 +37,29 @@ console.log('[1] 当前会话:', st.code === 200 ? `已登录 ${st.user?.realNam
 
 if (st.code !== 200 && !persistOnly) {
   const cred = loadAccount();
-  if (!cred) { console.log('❌ 无凭据（可用环境变量或 config/credentials.json 提供）'); process.exit(1); }
-  console.log(`[2] 重新登录（来源: ${cred.file}）…`);
-  st = await ensureLoggedIn(page, cred, { log: (m) => console.log('   ' + m), shotDir: 'K:\\网页自动学习\\session\\persist-login' });
+  if (cred) {
+    console.log(`[2] 重新登录（来源: ${cred.file}）…`);
+    st = await ensureLoggedIn(page, cred, { log: (m) => console.log('   ' + m), shotDir: SHOT_DIR });
+  } else {
+    // 没有凭据：打开登录页，由用户在浏览器里手动登录（扫码或账号密码）
+    console.log('[2] 未配置账号信息，请在弹出的浏览器窗口里手动登录（扫码或账号密码均可）…');
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    const t0 = Date.now();
+    let lastTick = 0;
+    while (true) {
+      st = await checkLogin(page);
+      if (st.code === 200) break;
+      if (Date.now() - t0 > MANUAL_WAIT_MS) {
+        console.log(`   等待登录超时（${Math.round(MANUAL_WAIT_MS / 60_000)} 分钟）`);
+        break;
+      }
+      if (Date.now() - lastTick > 15_000) {
+        lastTick = Date.now();
+        console.log(`   仍在等待登录……（已等 ${Math.floor((Date.now() - t0) / 1000)} 秒）`);
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
   console.log('[2] 登录结果:', st.code === 200 ? `✅ ${st.user?.realName}` : `❌ code=${st.code}`);
 }
 
@@ -69,18 +97,22 @@ st = await checkLogin(page);
 console.log('\n[4] 固化后复核:', st.code === 200 ? `✅ 已登录 ${st.user?.realName}` : `❌ code=${st.code}`);
 
 // 落一份 storageState 以备他用
-try {
-  if (typeof ctx.storageState !== 'function') throw new Error('当前浏览器不支持 storageState');
-  await ctx.storageState({ path: 'K:\\网页自动学习\\session\\storage-state.json' });
-  console.log('   已保存 session/storage-state.json');
-} catch (e) { console.log('   storageState 保存失败:', String(e).slice(0, 90)); }
+if (typeof ctx.storageState !== 'function') {
+  console.log('   当前浏览器不支持 storageState（Firefox 无此能力），跳过；登录态由 profile 自身保留');
+} else {
+  try {
+    mkdirSync(SESSION_DIR, { recursive: true });
+    await ctx.storageState({ path: STATE_FILE });
+    console.log('   已保存 session/storage-state.json');
+  } catch (e) { console.log('   storageState 保存失败:', String(e).slice(0, 90)); }
+}
 
 // ---------- 5) 重启验证 ----------
 if (process.argv.includes('--restart-check')) {
   console.log('\n[5] 关闭浏览器 → 重启 → 验证登录是否还在…');
   await ctx.close().catch(() => {});
   await new Promise((r) => setTimeout(r, 4000));
-  if (prefer !== 'firefox' && !browserExe) {
+  if (!usingFirefox && !browserExe) {
     for (const p of ['msedge', 'chrome']) {
       try {
         const { execFileSync } = await import('node:child_process');

@@ -3,7 +3,7 @@
 ; 安装到当前用户目录，不需要管理员权限。
 ;
 ; 分发内容只包含「程序本体 + 题库」，明确排除：
-;   browser-profile-*\（本机登录态）、recon\（运行报告）、
+;   browser-profile-*\（本机登录态）、recon\apply\（运行报告）、
 ;   个人抓取的 export\papers.json / courses-resolved.json、ms-playwright\。
 
 #define MyAppName "智慧树一键全自动"

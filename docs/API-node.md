@@ -7,7 +7,7 @@
 
 | 模块 | 导出 | 用途 |
 |---|---|---|
-| `src/core/browser.mjs` | `HOME` `discoverChromium` `listAvailableBrowsers` `findChromium` `cdpAlive` `findLiveCdp` `ensureChromium` `connect` `findPage` `readyPage` `tidy` `focusWindow` `waitContent` | 浏览器抽象层（自动发现本机浏览器 → Chromium 走 CDP / Firefox 走 BiDi） |
+| `src/core/browser.mjs` | `HOME` `runningBrowsers` `discoverChromium` `listAvailableBrowsers` `findChromium` `cdpAlive` `findLiveCdp` `ensureChromium` `connect` `findPage` `readyPage` `tidy` `focusWindow` `waitContent` | 浏览器抽象层（自动发现本机/运行中的浏览器 → Chromium 走 CDP / Firefox 走 BiDi） |
 | `src/core/login-flow.mjs` | `LOGIN_URL` `API_USERINFO` `loadAccount` `checkLogin` `captchaVisible` `fillLoginForm` `ensureLoggedIn` | 登录公共逻辑（学校下拉框等易错点集中在此） |
 | `src/core/accounts.mjs` | `STORE` `LEGACY` `FIELD_ALIASES` `normalizeAccount` `resolveAccount` `saveAccount` `importAccount` `exportAccount` `harden` `mask` `fieldHelp` | 凭据解析：多来源、字段别名归一、导入导出、权限收紧 |
 | `src/core/prompt.mjs` | `askLine` `askSecret` | 交互式读取输入（TTY 隐藏回显；管道可用） |
@@ -25,12 +25,21 @@ import { HOME } from './src/core/browser.mjs';
 // HOME = 'https://onlineweb.zhihuishu.com/onlinestuh5'   学生端首页
 ```
 
+### `runningBrowsers({ refresh = false })`
+
+枚举本机**正在运行**的浏览器进程（Windows，PowerShell CIM；其它平台返回 `[]`）。结果缓存 4 秒。
+
+- **返回**：`{ name, exe, pid, port, userDataDir, own }[]`
+  - `port`：命令行里 `--remote-debugging-port` 声明的调试端口（没有则为 `null`）
+  - `own`：`--user-data-dir` 是否指向本项目的 `browser-profile-*`
+- **用途**：接管已经打开且带调试端口的浏览器；发现便携版/自定义安装目录的浏览器
+
 ### `discoverChromium({ refresh = false })`
 
-枚举本机**真实存在**的 Chromium 系浏览器：常见安装位置 + 注册表（App Paths / Uninstall DisplayIcon）+ `PATH` + Playwright 自带 Chromium（`PLAYWRIGHT_BROWSERS_PATH` / `%LOCALAPPDATA%\ms-playwright` / 项目内 `ms-playwright`）。结果在进程内缓存。
+枚举本机**真实存在**的 Chromium 系浏览器：常见安装位置 + 注册表（App Paths / Uninstall DisplayIcon）+ `PATH` + Playwright 自带 Chromium（`PLAYWRIGHT_BROWSERS_PATH` / `%LOCALAPPDATA%\ms-playwright` / 项目内 `ms-playwright`）+ 运行中进程的可执行路径。结果在进程内缓存。
 
 - **返回**：`{ name, exePath, port, source }[]`；没有任何已安装浏览器时为 `[]`
-- **排序**：已有 profile（登录态）→ 系统默认浏览器 → 发现顺序
+- **排序**：带调试端口的运行中实例 → 已有 profile（登录态）→ 运行中 → 系统默认浏览器 → 发现顺序；**Edge 永远最后**
 
 ### `listAvailableBrowsers()`
 
@@ -51,15 +60,18 @@ import { HOME } from './src/core/browser.mjs';
 
 - **返回**：`Promise<object | null>`；存活时返回 `/json/version` 的解析结果（含 `Browser` 版本串），否则 `null`
 
-### `findLiveCdp()`
+### `findLiveCdp({ allowEdge = true, excludePorts = [] } = {})`
 
-并发探测所有已知调试端口，找已经在运行的 CDP 实例（复用已登录的浏览器）。
+并发探测所有已知调试端口，找已经在运行的 CDP 实例（复用已登录的浏览器）。候选端口来源：运行中进程声明的任意调试端口 → 各浏览器固定端口 → 自定义端口 9231。
 
-- **返回**：`Promise<{ browser, port, version } | null>`
+- **返回**：`Promise<{ browser, port, version, running, own, pid, hasTarget } | null>`
+  - `hasTarget`：该实例里已经打开了智慧树页面（接管后通常无需重新登录）
+  - 多个实例都活着时：非 Edge 且已打开智慧树页面 > 运行中的非 Edge > 其它
+- **`allowEdge: false`**：跳过 Edge 实例（本机还有其它浏览器时，Edge 只作兜底）
 
 ### `ensureChromium({ headless = false } = {})`
 
-**幂等**地保证有一个可接管的 Chromium 在跑：已在跑则复用，否则用系统原版浏览器 + `--remote-debugging-port` 启动。
+**幂等**地保证有一个可接管的 Chromium 在跑：已经在跑（含用户手动带调试端口打开的任意端口实例）则复用，否则用系统原版浏览器 + `--remote-debugging-port` 启动。
 
 > 为什么必须这样启动：Playwright 自己 `launch` 的 Chromium 带 `navigator.webdriver=true`，网易易盾验证码会拒绝渲染。用系统原版浏览器 + CDP 接管后 `navigator.webdriver=false`，验证码可正常通过。
 
@@ -78,7 +90,7 @@ import { HOME } from './src/core/browser.mjs';
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `prefer` | `'chromium'` \| `'firefox'` | `'chromium'` | `firefox` 走 Playwright 自带构建的持久化 profile |
+| `prefer` | `'chromium'` \| `'firefox'` | `'chromium'` | 不传 `--browser-exe` 时按 autoPrefer 选：非 Edge 的 Chromium 系 → Firefox → Edge；只有显式 `firefox` 才强制 Firefox |
 
 - **返回**：`Promise<{ kind, browserName, browser, ctx, describe, close }>`
 

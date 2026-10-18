@@ -281,7 +281,7 @@ async function cmdDoctor() {
     const found = listAvailableBrowsers();
     const SRC = {
       'path-hint': '常见路径', registry: '注册表', PATH: 'PATH',
-      playwright: 'Playwright', firefox: '系统安装', explicit: '手动指定',
+      playwright: 'Playwright', firefox: '系统安装', explicit: '手动指定', running: '运行中',
     };
     line('可用浏览器', found.length > 0,
       found.length
@@ -319,22 +319,15 @@ function cmdLogin() {
   const script = join(ROOT, 'recon', 'login-and-persist.mjs');
   if (!existsSync(script)) { bad('缺少 recon\\login-and-persist.mjs'); return 1; }
 
-  // 凭据来源检查：命令行/环境变量/凭据库/指定文件
+  // 凭据来源检查：命令行/环境变量/凭据库/指定文件；
+  // 没有凭据也允许继续：打开浏览器后由用户手动登录（扫码或账号密码），登录成功再固化会话。
   const r = ACC.resolveAccount({ argv: ARGV });
-  if (!r.complete) {
-    bad(`凭据不完整，缺：${r.missing.join('、')}`);
-    say('');
-    say('可用这些方式提供（优先级从高到低）：');
-    say('  1) 命令行： node zhs.mjs login --school 示例大学 --student-id 00000000000 --password "***"');
-    say('  2) 环境变量： $env:ZHS_STUDENT_ID="..."; $env:ZHS_PASSWORD="..."');
-    say('  3) 导入文件： node zhs.mjs import <任意来源.json>');
-    say('  4) 交互录入： node zhs.mjs import --prompt');
-    say('  5) 凭据库：   ' + ACC.STORE);
-    if (r.problems.length) { say(''); for (const p of r.problems) warn(p); }
-    return 1;
+  if (r.complete) {
+    say(`凭据来源：${describeSource(r)}`);
+    say(`  school=${r.acc.school}　studentId=${r.acc.studentId}　password=${ACC.mask(r.acc.password)}${r.acc.realName ? '　realName=' + r.acc.realName : ''}`);
+  } else {
+    info('未配置账号信息，改为手动登录：请在打开的浏览器里扫码或输入账号密码。');
   }
-  say(`凭据来源：${describeSource(r)}`);
-  say(`  school=${r.acc.school}　studentId=${r.acc.studentId}　password=${ACC.mask(r.acc.password)}${r.acc.realName ? '　realName=' + r.acc.realName : ''}`);
 
   const args = [script];
   if (has('restart-check')) args.push('--restart-check');
@@ -345,11 +338,14 @@ function cmdLogin() {
     if (typeof v === 'string' && v) args.push('--' + k, v);
   }
   process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH || join(ROOT, 'ms-playwright');
-  // 把解析后的凭据注入子进程，命令行里传的密码不会丢失
+  // 把解析后的凭据注入子进程，命令行里传的密码不会丢失；
+  // 没配齐账号时不注入，让子进程走手动登录
   const childEnv = { ...process.env };
-  for (const [envKey, key] of [['ZHS_SCHOOL', 'school'], ['ZHS_STUDENT_ID', 'studentId'], ['ZHS_PASSWORD', 'password'], ['ZHS_REAL_NAME', 'realName']]) {
-    if (r.acc[key]) childEnv[envKey] = r.acc[key];
-    else delete childEnv[envKey];
+  for (const envKey of ['ZHS_SCHOOL', 'ZHS_STUDENT_ID', 'ZHS_PASSWORD', 'ZHS_REAL_NAME']) delete childEnv[envKey];
+  if (r.complete) {
+    for (const [envKey, key] of [['ZHS_SCHOOL', 'school'], ['ZHS_STUDENT_ID', 'studentId'], ['ZHS_PASSWORD', 'password'], ['ZHS_REAL_NAME', 'realName']]) {
+      if (r.acc[key]) childEnv[envKey] = r.acc[key];
+    }
   }
   const res = run(node, args, { env: childEnv });
   const code = res.status ?? 1;

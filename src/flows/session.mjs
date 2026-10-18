@@ -11,13 +11,13 @@ const OUT = join(ROOT, 'session');
 mkdirSync(OUT, { recursive: true });
 
 export async function ensureSession() {
-  let browser, ctx;
+  let browser, ctx, close;
   // 浏览器选择可由上层透传（whoami 等命令复用同一套 --browser 参数）
   const prefer = process.env.ZHS_BROWSER === 'firefox' ? 'firefox' : 'chromium';
   const exe = process.env.ZHS_BROWSER_EXE || null;
   const firefoxProfile = process.env.ZHS_FIREFOX_PROFILE || null;
   try {
-    ({ browser, ctx } = await connect({ prefer, exe, firefoxProfile }));
+    ({ browser, ctx, close } = await connect({ prefer, exe, firefoxProfile }));
   } catch (e) {
     return { ok: false, reason: 'CDP 浏览器未运行，请先执行 start-browser.ps1', error: String(e).slice(0, 200) };
   }
@@ -67,7 +67,8 @@ export async function ensureSession() {
       detail: chk,
     };
   } finally {
-    await browser.close().catch(() => {});
+    // Firefox 适配层没有 browser 对象，统一用 connect 返回的 close
+    await (close ? close() : browser?.close()).catch(() => {});
   }
 }
 

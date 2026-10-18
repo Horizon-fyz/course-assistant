@@ -17,7 +17,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { connect, readyPage, tidy, HOME, listAvailableBrowsers } from './src/core/browser.mjs';
+import { connect, readyPage, tidy, HOME, listAvailableBrowsers, autoPrefer } from './src/core/browser.mjs';
 import { DATA_DIR } from './src/core/store.mjs';
 
 const ROOT = import.meta.dirname ?? dirname(fileURLToPath(import.meta.url));
@@ -45,8 +45,8 @@ function kindFromExe(exe) {
 
 /**
  * 解析实际要用的浏览器：
- *   auto    → 先枚举本机真实装了的浏览器：有 Chromium 系就用，没有才用 Firefox
- *   chromium / chrome / edge → Chromium 系
+ *   auto    → 非 Edge 的 Chromium 系 > Firefox > Edge（Edge 仅作兜底）
+ *   chromium / chrome / edge → Chromium 系（connect 内部同样优先非 Edge）
  *   firefox → Firefox
  * 指定 --browser-exe 时以文件名判定种类。
  */
@@ -62,11 +62,7 @@ function resolveBrowser() {
   if (BROWSER_ARG === 'chromium' || BROWSER_ARG === 'chrome' || BROWSER_ARG === 'edge') {
     return { prefer: 'chromium', exe: null, auto: false };
   }
-  const list = listAvailableBrowsers();
-  const prefer = list.some((b) => b.kind === 'chromium') ? 'chromium'
-    : list.some((b) => b.kind === 'firefox') ? 'firefox'
-      : 'chromium'; // 都没有时仍返回 chromium，交给 connect 给出安装提示
-  return { prefer, exe: null, auto: true };
+  return { prefer: autoPrefer(), exe: null, auto: true };
 }
 
 const BROWSER = resolveBrowser();
