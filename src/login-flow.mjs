@@ -51,12 +51,152 @@ export async function captchaVisible(page) {
   }).catch(() => 0);
 }
 
+/* ------------------------- 拟人输入原语 ------------------------- */
+//
+// 直接 fill() 会让整段文本「一次写入」：页面只能看到一个 input 事件、
+// 零 keydown/keyup。易盾这类 SDK 会把它当脚本特征（见 recon/detect-surface.mjs）。
+// 这里改成：移动轨迹 + 按下停留 + 逐字输入、非均匀间隔。
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+let lastMouse = null;
+
+/** 统一输入通道：Chromium 用 Playwright，Firefox/BiDi 用 input.performActions */
+function inputDriver(page) {
+  if (page.mouse && page.keyboard && typeof page.mouse.move === 'function') {
+    return {
+      label: 'playwright',
+      move: (x, y) => page.mouse.move(x, y),
+      down: () => page.mouse.down(),
+      up: () => page.mouse.up(),
+      typeChar: (ch) => page.keyboard.type(ch),
+    };
+  }
+  const conn = page.conn;
+  if (conn && typeof conn.send === 'function') {
+    const send = (actions) => conn.send('input.performActions', { context: page.contextId, actions }, 10000);
+    const pointer = (actions) => send([{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' }, actions }]);
+    return {
+      label: 'bidi',
+      move: (x, y) => pointer([{ type: 'pointerMove', x: Math.round(x), y: Math.round(y), duration: 0 }]),
+      down: () => pointer([{ type: 'pointerDown', button: 0 }]),
+      up: () => pointer([{ type: 'pointerUp', button: 0 }]),
+      typeChar: (ch) => send([{ type: 'key', id: 'keyboard', actions: [
+        { type: 'keyDown', value: ch },
+        { type: 'keyUp', value: ch },
+      ] }]),
+    };
+  }
+  return null;
+}
+
+/** 元素中心点：selector 会跳过隐藏元素；也接受 Playwright / BiDi locator */
+async function centerOf(page, target) {
+  if (typeof target === 'string') {
+    return page.evaluate((sel) => {
+      const el = [...document.querySelectorAll(sel)].find((e) => {
+        const r = e.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, target).catch(() => null);
+  }
+  if (target && typeof target.boundingBox === 'function') {
+    if (typeof target.scrollIntoViewIfNeeded === 'function') {
+      await target.scrollIntoViewIfNeeded().catch(() => {});
+    }
+    const box = await target.boundingBox().catch(() => null);
+    return box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : null;
+  }
+  if (target && typeof target._center === 'function') {
+    const box = await target._center().catch(() => null);
+    return box ? { x: box.x, y: box.y } : null;
+  }
+  return null;
+}
+
+/** 多段贝塞尔轨迹 + 抖动 + 随机步间延时 */
+async function humanMove(drv, to) {
+  const from = lastMouse ?? { x: to.x + rnd(-280, 280), y: to.y + rnd(-200, 200) };
+  const steps = 8 + Math.floor(Math.random() * 7);
+  const cx = (from.x + to.x) / 2 + rnd(-60, 60);
+  const cy = (from.y + to.y) / 2 + rnd(-40, 40);
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const x = (1 - t) ** 2 * from.x + 2 * (1 - t) * t * cx + t ** 2 * to.x;
+    const y = (1 - t) ** 2 * from.y + 2 * (1 - t) * t * cy + t ** 2 * to.y;
+    await drv.move(x + rnd(-1.5, 1.5), y + rnd(-1.5, 1.5));
+    await sleep(rnd(8, 22));
+  }
+  lastMouse = { x: to.x, y: to.y };
+}
+
+/** 拟人点击：轨迹 → 随机停留 → 按下 → 停留 55–130ms → 抬起 */
+export async function humanClick(page, target, { drv = null } = {}) {
+  const d = drv ?? inputDriver(page);
+  if (!d) throw new Error('没有可用的输入通道');
+  const c = await centerOf(page, target);
+  if (!c) throw new Error('定位失败: ' + (typeof target === 'string' ? target : 'locator'));
+  await humanMove(d, c);
+  await sleep(rnd(60, 160));
+  await d.down();
+  await sleep(rnd(55, 130));
+  await d.up();
+  lastMouse = { x: c.x, y: c.y };
+  await sleep(rnd(160, 420));
+  return c;
+}
+
+/** 拟人输入：点击聚焦 → 清空残留 → 逐字输入（70–170ms 随机间隔） */
+export async function humanType(page, target, text, { drv = null } = {}) {
+  const d = drv ?? inputDriver(page);
+  if (!d) {
+    await page.locator(target).fill(text);
+    return String(text).length;
+  }
+  await humanClick(page, target, { drv: d });
+
+  // 清空已有内容：Chromium 用 fill('')（触发真实 input 事件）；BiDi 直接改值
+  const cur = await page.evaluate((sel) => {
+    if (typeof sel !== 'string') return '';
+    const el = document.querySelector(sel);
+    return el ? String(el.value ?? '') : '';
+  }, target).catch(() => '');
+  if (cur) {
+    let cleared = false;
+    try {
+      const loc = page.locator(target).first();
+      if (typeof loc.fill === 'function') { await loc.fill(''); cleared = true; }
+    } catch { /* 交给下面的脚本清空 */ }
+    if (!cleared) await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, target).catch(() => {});
+  }
+
+  for (const ch of String(text)) {
+    await d.typeChar(ch);
+    await sleep(rnd(70, 170));
+  }
+  await sleep(rnd(120, 260));
+  return String(text).length;
+}
+
+
 /**
  * 在给定 page 上完成「学号登录」表单。
  * 学校下拉框是易错点：必须精确选中 ACC.school，不能落到同名前缀项或列表首项。
  */
 export async function fillLoginForm(page, acc, { log = console.log, shotDir = null } = {}) {
   const SCHOOL = acc.school;
+  const drv = inputDriver(page);
+  if (drv) log(`[form] 输入通道: ${drv.label}（拟人模式：轨迹 + 停留 + 逐字输入）`);
   const shot = async (name) => {
     if (!shotDir) return;
     try { mkdirSync(shotDir, { recursive: true }); await page.screenshot({ path: join(shotDir, name) }); } catch {}
@@ -66,17 +206,22 @@ export async function fillLoginForm(page, acc, { log = console.log, shotDir = nu
   await page.waitForTimeout(3500);
 
   log('[form] 切换到「学号登录」…');
-  await page.getByText('学号登录', { exact: true }).first().click({ timeout: 15000 }).catch(() => {});
+  await humanClick(page, page.getByText('学号登录', { exact: true }).first(), { drv })
+    .catch(() => page.getByText('学号登录', { exact: true }).first().click({ timeout: 15000 }))
+    .catch(() => {});
   await page.waitForTimeout(2000);
 
   log(`[form] 选择学校 = ${SCHOOL}`);
   let picked = null;
   try {
-    const sel = page.locator('input.el-select__input:visible').first();
-    await sel.click({ timeout: 10000 });
-    await page.waitForTimeout(800);
-    await sel.fill('');
-    await sel.type(SCHOOL, { delay: 90 });
+    await humanType(page, 'input.el-select__input', SCHOOL, { drv }).catch(async () => {
+      // 兜底：定位不到元素时退回旧写法
+      const sel = page.locator('input.el-select__input:visible').first();
+      await sel.click({ timeout: 10000 });
+      await page.waitForTimeout(800);
+      await sel.fill('');
+      await sel.type(SCHOOL, { delay: 90 });
+    });
     await page.waitForTimeout(3000);
 
     const opts = page.locator('.el-select-dropdown__item:visible');
@@ -85,9 +230,10 @@ export async function fillLoginForm(page, acc, { log = console.log, shotDir = nu
 
     const exact = opts.filter({ hasText: new RegExp(`^\\s*${SCHOOL}\\s*$`) }).first();
     if (await exact.count()) {
-      await exact.click({ timeout: 8000 });
+      await humanClick(page, exact, { drv }).catch(() => exact.click({ timeout: 8000 }));
       picked = SCHOOL;
     } else {
+      const sel = page.locator('input.el-select__input:visible').first();
       await sel.press('ArrowDown').catch(() => {});
       await page.waitForTimeout(600);
       await sel.press('Enter').catch(() => {});
@@ -110,18 +256,24 @@ export async function fillLoginForm(page, acc, { log = console.log, shotDir = nu
   }
 
   log('[form] 填学号与密码…');
-  await page.locator('input[name="unid"]').fill(acc.studentId).catch(() => {});
-  await page.locator('input[type="password"]:visible').first().fill(acc.password).catch(() => {});
+  await humanType(page, 'input[name="unid"]', acc.studentId, { drv })
+    .catch(() => page.locator('input[name="unid"]').fill(acc.studentId))
+    .catch(() => {});
+  await humanType(page, 'input[type="password"]', acc.password, { drv })
+    .catch(() => page.locator('input[type="password"]:visible').first().fill(acc.password))
+    .catch(() => {});
   await page.waitForTimeout(600);
 
   log('[form] 勾选用户协议…');
-  await page.getByText('我已阅读并同意').first().click({ timeout: 8000 }).catch(async () => {
+  await humanClick(page, page.getByText('我已阅读并同意').first(), { drv }).catch(async () => {
     await page.locator('.el-checkbox:visible').first().click({ timeout: 5000 }).catch(() => {});
   });
   await page.waitForTimeout(800);
   let chk = await page.evaluate(() => document.querySelector('input.el-checkbox__original')?.checked ?? null).catch(() => null);
   if (!chk) {
-    await page.locator('.el-checkbox:visible').first().click({ force: true }).catch(() => {});
+    await humanClick(page, '.el-checkbox', { drv })
+      .catch(() => page.locator('.el-checkbox:visible').first().click({ force: true }))
+      .catch(() => {});
     await page.waitForTimeout(800);
     chk = await page.evaluate(() => document.querySelector('input.el-checkbox__original')?.checked ?? null).catch(() => null);
   }
@@ -130,7 +282,9 @@ export async function fillLoginForm(page, acc, { log = console.log, shotDir = nu
   await shot('form-filled.png');
 
   log('[form] 提交…');
-  await page.locator('div.btn-block__grandient_login').first().click({ timeout: 12000 }).catch(() => {});
+  await humanClick(page, 'div.btn-block__grandient_login', { drv })
+    .catch(() => page.locator('div.btn-block__grandient_login').first().click({ timeout: 12000 }))
+    .catch(() => {});
   return { picked, shown, schoolVerified, schoolShown: shown };
 }
 

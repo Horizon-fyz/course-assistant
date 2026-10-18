@@ -4,63 +4,25 @@
 
 | 平台 | 入口 | 读题方式 | 点击能力 | 适用场景 |
 |---|---|---|---|---|
-| **Windows 桌面** | `pad.ps1` / `pad-controller.ps1` | 截屏 → 多模态 AI | ❌ 只读 | 任何窗口化应用 |
-| **浏览器插件** | Chrome/Edge 扩展 | DOM 读取（精确） | ✅ 可点击 | 网页版智慧树 |
+| **Windows 桌面** | `智慧树助手.exe` | 内置浏览器读 DOM；截屏 | ✅ 可点击 | 网页版智慧树 / 任何窗口 |
 | **安卓** | 待开发 | 截屏 / 无障碍 | ⚠️ 需无障碍 | 手机 App |
 
 ---
 
 ## Windows 桌面
 
-### 模式 1：只读悬浮窗（已有）
+自带基于 WebView2 的浏览器窗口，可直接在窗口内登录、读题、回填，无需截屏。
 
 ```powershell
-# 截屏识别当前屏幕，给答案（不点击）
-node zhs.mjs pad
-# 或
-powershell -NoProfile -ExecutionPolicy Bypass -File md-ai-answer\pad\pad.ps1
-```
-
-**快捷键**：`Alt+Q` 识别并作答
-
-### 模式 2：接管悬浮窗（新增）
-
-```powershell
-# 列出待完成作业，手动打开后接管
-powershell -NoProfile -ExecutionPolicy Bypass -File md-ai-answer\pad\pad-controller.ps1
+# 打包便携版：生成 dist\智慧树助手\，整个目录可拷走，双击「智慧树助手.exe」运行
+powershell -NoProfile -ExecutionPolicy Bypass -File build-portable.ps1
 ```
 
 **流程**：
-1. 悬浮窗列出所有未提交作业
-2. 选中 → 点「打开选中作业」→ 浏览器打开
-3. 页面加载完成后，运行：
-   ```bash
-   node src\apply-homework.mjs --apply
-   ```
-4. 脚本模拟人类点击，只保存不提交
-
----
-
-## 浏览器插件（推荐）
-
-### 安装
-
-1. 打开 Chrome/Edge → 扩展管理 → 开发者模式
-2. 加载已解压的扩展程序 → 选择 `extension/` 目录
-
-### 使用
-
-1. **配置 AI**：点击插件图标，填 `baseUrl` / `apiKey` / `model`
-2. **打开作业页**：智慧树网页版，进入作业/考试
-3. **扫描题目**：点插件「扫描题目」或悬浮窗「扫描」
-4. **获取答案**：点「获取答案」→ 悬浮窗显示
-5. **回填**：点「回填（不提交）」→ 模拟人类点击选项
-6. **检查页面**：确认无误后**手动提交**
-
-### 视频弹题
-
-- 插件自动检测 `#playTopic-dialog` 弹窗
-- 弹题出现时点「扫描」即可识别
+1. 在窗口内登录智慧树，进入作业 / 考试页面；
+2. 点工具栏「扫描本页」——读取页面题目并调用 AI 生成答案；
+3. 点「助手面板」打开置顶小窗，逐题查看答案（← → 翻页）；
+4. 点「回填本页」——按人的节奏点击选项（只点选项，**不会点「提交作业」**）。
 
 ---
 

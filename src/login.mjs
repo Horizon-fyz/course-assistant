@@ -3,6 +3,7 @@
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { humanClick, humanType } from './login-flow.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
 
@@ -52,23 +53,27 @@ await page.getByText('学号登录', { exact: true }).first().click();
 await page.waitForTimeout(1500);
 
 console.log('[3] 选择学校：', ACC.school);
-const selectInput = page.locator('input.el-select__input:visible').first();
-await selectInput.click();
-await selectInput.fill(ACC.school);
+await humanType(page, 'input.el-select__input', ACC.school).catch(async () => {
+  const selectInput = page.locator('input.el-select__input:visible').first();
+  await selectInput.click();
+  await selectInput.fill(ACC.school);
+});
 await page.waitForTimeout(2500);
 // 优先精确匹配
 const exact = page.locator('.el-select-dropdown__item', { hasText: new RegExp(`^${ACC.school}$`) }).first();
-if (await exact.count()) await exact.click();
+if (await exact.count()) await humanClick(page, exact).catch(() => exact.click());
 else await page.locator('.el-select-dropdown__item').first().click();
 await page.waitForTimeout(1200);
 
 console.log('[4] 填入学号…');
-await page.locator('input[name="unid"]').fill(ACC.studentId);
+await humanType(page, 'input[name="unid"]', ACC.studentId)
+  .catch(() => page.locator('input[name="unid"]').fill(ACC.studentId));
 await page.waitForTimeout(600);
 
 console.log('[5] 填入密码…');
 // 密码框是 el-input 内无 name 的 password 输入
-await page.locator('input[type="password"]:visible').first().fill(ACC.password);
+await humanType(page, 'input[type="password"]', ACC.password)
+  .catch(() => page.locator('input[type="password"]:visible').first().fill(ACC.password));
 await page.waitForTimeout(600);
 
 console.log('[6] 勾选用户协议…');
@@ -87,7 +92,9 @@ console.log('[7] 登录按钮 text =', JSON.stringify(btnText), 'disabled =', is
 await page.screenshot({ path: OUT + '\\before-submit.png' });
 
 console.log('[8] 点击登录…');
-await btn.click({ timeout: 10000 }).catch((e) => console.log('   click err:', String(e).slice(0, 160)));
+await humanClick(page, 'div.btn-block__grandient_login')
+  .catch(() => btn.click({ timeout: 10000 }))
+  .catch((e) => console.log('   click err:', String(e).slice(0, 160)));
 
 // 等待跳转，若出现验证码则给用户时间操作
 let landed = false;

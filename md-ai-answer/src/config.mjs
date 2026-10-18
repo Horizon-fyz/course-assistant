@@ -11,22 +11,31 @@
 
 /**
  * @typedef {Object} Config
- * @property {string} baseUrl       AI 接口根地址
- * @property {string} apiKey        AI 接口密钥
- * @property {string} model         模型名
+ * @property {string} visionBaseUrl 识别模型接口根地址（通义千问 VL）
+ * @property {string} visionApiKey  识别模型密钥
+ * @property {string} visionModel   识别模型名
+ * @property {string} reasonBaseUrl 思考模型接口根地址（DeepSeek）
+ * @property {string} reasonApiKey  思考模型密钥
+ * @property {string} reasonModel   思考模型名
  * @property {number} temperature   采样温度
  * @property {number} timeoutMs     单请求超时(ms)
  * @property {number} maxRetries    失败重试次数
  * @property {number} concurrency   并发请求数
  * @property {number} batchSize     每批题目数
- * @property {string} systemPrompt  系统提示词
+ * @property {string} systemPrompt  系统提示词（思考阶段使用）
  */
 
-/** 默认配置。所有字段都可被更高优先级的来源覆盖。 */
+/**
+ * 默认配置。所有字段都可被更高优先级的来源覆盖。
+ * 两套模型分工：识别模型（通义千问 VL）只看图、识别题干与选项；思考模型（DeepSeek）只依据文本推理答案。
+ */
 export const DEFAULT_CONFIG = Object.freeze({
-  baseUrl: '',
-  apiKey: '',
-  model: 'gpt-4o-mini',
+  visionBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  visionApiKey: '',
+  visionModel: 'qwen3-vl-plus',
+  reasonBaseUrl: 'https://api.deepseek.com/v1',
+  reasonApiKey: '',
+  reasonModel: 'deepseek-reasoner',
   temperature: 0.2,
   timeoutMs: 60000,
   maxRetries: 3,
@@ -34,6 +43,34 @@ export const DEFAULT_CONFIG = Object.freeze({
   batchSize: 5,
   systemPrompt: '你是一名严谨的答题助手。仅依据题目本身与常识给出正确答案，不要编造。',
 });
+
+/**
+ * 取出「识别模型（通义千问）」的调用参数，兼容旧版扁平配置（baseUrl/apiKey/model）。
+ * @param {Partial<Config>} config
+ * @returns {{baseUrl:string, apiKey:string, model:string}}
+ */
+export function pickVision(config) {
+  const c = config || {};
+  return {
+    baseUrl: c.visionBaseUrl || c.baseUrl || '',
+    apiKey: c.visionApiKey || c.apiKey || '',
+    model: c.visionModel || c.model || 'qwen3-vl-plus',
+  };
+}
+
+/**
+ * 取出「思考模型（DeepSeek）」的调用参数。
+ * @param {Partial<Config>} config
+ * @returns {{baseUrl:string, apiKey:string, model:string}}
+ */
+export function pickReason(config) {
+  const c = config || {};
+  return {
+    baseUrl: c.reasonBaseUrl || '',
+    apiKey: c.reasonApiKey || '',
+    model: c.reasonModel || 'deepseek-reasoner',
+  };
+}
 
 /**
  * 合并多份配置，后者覆盖前者；忽略 undefined，保留 0 / '' 等有效值。
@@ -54,13 +91,26 @@ export function mergeConfig(...sources) {
 /**
  * 校验配置是否可用于真实调用（mock 模式下无需调用）。
  * @param {Config} config
+ * @param {{needVision?:boolean, needReason?:boolean}} [opts] 默认两者都校验；
+ *        离线批量作答（/api/answer）只需思考模型，可传 { needVision:false }。
  * @returns {string[]} 缺失项说明；为空表示通过
  */
-export function validateConfig(config) {
+export function validateConfig(config, opts = {}) {
+  const needVision = opts.needVision !== false;
+  const needReason = opts.needReason !== false;
   const missing = [];
-  if (!config.baseUrl) missing.push('baseUrl（AI 接口地址）');
-  if (!config.apiKey) missing.push('apiKey（AI 接口密钥）');
-  if (!config.model) missing.push('model（模型名）');
+  if (needVision) {
+    const v = pickVision(config);
+    if (!v.baseUrl) missing.push('识别模型 baseUrl（通义千问）');
+    if (!v.apiKey) missing.push('识别模型 apiKey（通义千问）');
+    if (!v.model) missing.push('识别模型 model（通义千问）');
+  }
+  if (needReason) {
+    const r = pickReason(config);
+    if (!r.baseUrl) missing.push('思考模型 baseUrl（DeepSeek）');
+    if (!r.apiKey) missing.push('思考模型 apiKey（DeepSeek）');
+    if (!r.model) missing.push('思考模型 model（DeepSeek）');
+  }
   return missing;
 }
 
@@ -81,16 +131,21 @@ export async function readConfigFile(filePath) {
 }
 
 /**
- * 从环境变量读取覆盖项（AI_BASE_URL / AI_API_KEY / AI_MODEL）。
+ * 从环境变量读取覆盖项。
+ * 识别模型：AI_VISION_BASE_URL / AI_VISION_API_KEY / AI_VISION_MODEL（旧名 AI_BASE_URL 等作为兼容）；
+ * 思考模型：AI_REASON_BASE_URL / AI_REASON_API_KEY / AI_REASON_MODEL。
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {Partial<Config>}
  */
 export function configFromEnv(env = process.env) {
   /** @type {Partial<Config>} */
   const out = {};
-  if (env.AI_BASE_URL) out.baseUrl = env.AI_BASE_URL;
-  if (env.AI_API_KEY) out.apiKey = env.AI_API_KEY;
-  if (env.AI_MODEL) out.model = env.AI_MODEL;
+  if (env.AI_VISION_BASE_URL || env.AI_BASE_URL) out.visionBaseUrl = env.AI_VISION_BASE_URL || env.AI_BASE_URL;
+  if (env.AI_VISION_API_KEY || env.AI_API_KEY) out.visionApiKey = env.AI_VISION_API_KEY || env.AI_API_KEY;
+  if (env.AI_VISION_MODEL || env.AI_MODEL) out.visionModel = env.AI_VISION_MODEL || env.AI_MODEL;
+  if (env.AI_REASON_BASE_URL) out.reasonBaseUrl = env.AI_REASON_BASE_URL;
+  if (env.AI_REASON_API_KEY) out.reasonApiKey = env.AI_REASON_API_KEY;
+  if (env.AI_REASON_MODEL) out.reasonModel = env.AI_REASON_MODEL;
   return out;
 }
 
@@ -102,9 +157,12 @@ export function configFromEnv(env = process.env) {
 export function configFromArgs(args = {}) {
   /** @type {Partial<Config>} */
   const out = {};
-  if (args['base-url']) out.baseUrl = args['base-url'];
-  if (args['api-key']) out.apiKey = args['api-key'];
-  if (args.model) out.model = args.model;
+  if (args['vision-base-url'] || args['base-url']) out.visionBaseUrl = args['vision-base-url'] || args['base-url'];
+  if (args['vision-api-key'] || args['api-key']) out.visionApiKey = args['vision-api-key'] || args['api-key'];
+  if (args['vision-model'] || args.model) out.visionModel = args['vision-model'] || args.model;
+  if (args['reason-base-url']) out.reasonBaseUrl = args['reason-base-url'];
+  if (args['reason-api-key']) out.reasonApiKey = args['reason-api-key'];
+  if (args['reason-model']) out.reasonModel = args['reason-model'];
   if (args.concurrency) out.concurrency = Number(args.concurrency);
   if (args['batch-size']) out.batchSize = Number(args['batch-size']);
   return out;

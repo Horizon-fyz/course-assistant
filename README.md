@@ -39,7 +39,6 @@ Windows 下也可以直接**双击 `run.cmd`** —— 会做环境自检并显�
 | `run.cmd fetch` | 只抓题：课程发现 → 考试入口解析 → 批量抓题 → 安全复查（默认 Edge，可换 Firefox / 任意浏览器） |
 | `run.cmd docs` | 只生成文档：Markdown（打印版 + 纯文本）、Word、PDF、打印预览 HTML、Excel |
 | `run.cmd solve` | 只作答：识别题库 → 调用 AI（OpenAI 兼容）→ 输出答案汇总 + 回填版 |
-| `run.cmd pad` | 对答案悬浮窗：置顶小窗，抓屏识别当前题目并给答案（只读，不代填） |
 | `run.cmd verify` | 校验产物：数据契约 + 文档完整性 + 产物清单 |
 | `run.cmd all` | 上面几步串起来：fetch → docs → verify → solve（未配 AI 时自动跳过 solve） |
 
@@ -57,8 +56,6 @@ run.cmd docs  --formats md,pdf          # 只产出指定格式
 run.cmd docs  --out D:\题库             # 产物输出到别的目录
 run.cmd solve --limit 10                # 先拿 10 题试跑作答
 run.cmd solve --mock                    # 离线走通作答流程（不调用 AI、不花钱）
-run.cmd pad                             # 打开「对答案」置顶悬浮窗（Alt+Q 抓屏识别）
-run.cmd pad --test .\shot.png            # 不开窗口，只识别一张图（自检）
 run.cmd login --restart-check           # 登录后顺带验证「重启浏览器仍在线」
 ```
 
@@ -177,8 +174,6 @@ config\account-live.json ← 账号凭据
 src\browser.mjs          ← 浏览器抽象层（Chromium 系走 CDP / Firefox 走 BiDi / 支持 --browser-exe）
 src\bidi.mjs             ← WebDriver BiDi 最小客户端（零依赖，接管系统 Firefox）
 src\browser-firefox.mjs  ← Playwright 兼容适配层（让既有代码在 Firefox 上原样跑）
-md-ai-answer\src\hud.mjs   ← 悬浮窗的「识图 + 作答」核心
-md-ai-answer\pad\pad.ps1   ← 「对答案」置顶悬浮窗（PowerShell + WinForms）
 src\login-flow.mjs       ← 登录公共逻辑（学校下拉框等易错点集中在这里）
 src\pipeline.mjs         ← 抓取主流程
 recon\login-and-persist.mjs  ← 登录 + 会话固化

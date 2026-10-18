@@ -295,30 +295,6 @@ node zhs.mjs solve --mock --limit 20
 
 ---
 
-### `pad` — 对答案悬浮窗
-
-```
-node zhs.mjs pad [--test <png>]
-```
-
-常驻置顶的小窗（PowerShell + WinForms）。点「识别并作答」或按 `Alt+Q` 截取当前屏幕，交给 AI 找出**正在作答的那道题**并给出答案，供你自己核对。
-
-| 项 | 说明 |
-|---|---|
-| 参数 | `--test <png>`：不开窗口，只识别指定图片并打印结果（自检用） |
-| 交互 | `Alt+Q` 全局快捷键（窗口不在前台也能触发）或点按钮 |
-| 前置条件 | 需配置 AI（`md-ai-answer/config.json` 或 `AI_*` 环境变量） |
-| 退出码 | `0` 正常退出；`1` 缺脚本或启动失败 |
-| 副作用 | 截屏并上传到 AI 接口（可能产生费用）；**不点击、不填写、不提交任何页面元素** |
-
-> 边界说明：它只读屏幕、只显示答案，不代替你操作平台。答案不保证正确，请自行核对。
->
-> 实现说明：本机 Electron 在受限环境里启动即崩（`0xC0000005`），因此改用 PowerShell + WinForms；
-> 脚本以 UTF-8 **带 BOM** 保存（Windows PowerShell 5.1 解析中文的前提），
-> 且 HTTP 用 `HttpWebRequest` 显式按 UTF-8 收发（`Invoke-RestMethod` 会把无 charset 的 JSON 按 Latin-1 解码，中文全乱）。
-
----
-
 ### `all` — 全流程
 
 ```

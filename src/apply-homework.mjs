@@ -18,19 +18,22 @@
 //   node src\apply-homework.mjs --no-ai                # 不启用 AI 兜底
 //   node src\apply-homework.mjs --delay 800            # 自定义操作间隔(ms)
 import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { connect, tidy } from './browser.mjs';
 import { indexFromAnswersJson, resolveAnswer, buildLivePrompt, normalize, TYPE_LABELS } from './answer-engine.mjs';
 import { createClient } from '../md-ai-answer/src/ai.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
-const EXPORT = join(ROOT, 'export');
+/** 数据目录：桌面版通过 ZHS_DATA_DIR 指向便携目录下的 data\；否则用仓库 export\ */
+const EXPORT = process.env.ZHS_DATA_DIR ? resolve(process.env.ZHS_DATA_DIR) : join(ROOT, 'export');
 const OUT = join(ROOT, 'recon', 'apply');
 mkdirSync(OUT, { recursive: true });
 
 const argv = process.argv.slice(2);
 const getArg = (n, d = null) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const APPLY = argv.includes('--apply');
+const SCAN = argv.includes('--scan');       // 只读扫描：读页面题目 + 出答案，不点击
+const scanOut = getArg('--out');            // 扫描结果输出路径
 const LIST_ONLY = argv.includes('--list');
 const USE_AI = !argv.includes('--no-ai');
 const DELAY = Number(getArg('--delay', '600')) || 600;
@@ -42,10 +45,20 @@ const humanDelay = (base = DELAY) => sleep(base + Math.floor(Math.random() * 400
 
 // ---------- 读答案库 ----------
 function loadAnswerIndex() {
+  // 1) 显式指定（桌面版通过环境变量传入）
+  const explicit = process.env.ZHS_ANSWERS_JSON;
+  if (explicit && existsSync(explicit)) {
+    try {
+      const json = JSON.parse(readFileSync(explicit, 'utf8'));
+      return { index: indexFromAnswersJson(json), file: explicit };
+    } catch (e) { log('  ⚠️ 指定的答案文件解析失败：' + e.message); }
+  }
+
+  // 2) 约定的文件名；3) 目录内最新的 *.answers.json / answers.json
   const preferred = join(EXPORT, '智慧树作业题库_打印版.answers.json');
   let file = existsSync(preferred) ? preferred : null;
   if (!file && existsSync(EXPORT)) {
-    const cands = readdirSync(EXPORT).filter((f) => /\.answers\.json$/i.test(f))
+    const cands = readdirSync(EXPORT).filter((f) => /(\.answers\.json|^answers\.json)$/i.test(f))
       .map((f) => join(EXPORT, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
     file = cands[0] || null;
   }
@@ -254,6 +267,52 @@ await sleep(3000);
 
 const state0 = await examPage.evaluate(READ_STATE).catch(() => ({}));
 log(`当前页面: ${state0.qCount ?? '?'} 道题；有「下一题」=${state0.hasNext}`);
+
+// ---------- 扫描模式：只读页面、给出答案，绝不点击 ----------
+if (SCAN) {
+  const outFile = scanOut || join(EXPORT, 'scan-result.json');
+  const lives = await examPage.evaluate(READ_PAGE).catch(() => []);
+  if (!lives.length) {
+    log('\n⚠️ 当前页面没有读到题目，请确认作业页已加载完成。');
+    await close();
+    process.exit(1);
+  }
+
+  log(`\n扫描到 ${lives.length} 道题，正在生成答案…`);
+  const questions = [];
+  let okCount = 0, skipCount = 0;
+
+  for (const live of lives) {
+    const r = await resolveAnswer(live, { index, ask: aiClient ? ask : null });
+    const letters = r.ok ? r.indexes.map((i) => live.options[i]?.letter || String(i + 1)).join('') : '';
+    if (r.ok) okCount++; else skipCount++;
+    log(`  ${String(live.index + 1).padStart(2)}. [${TYPE_LABELS[live.type] || live.type}] ${letters || '✗ ' + r.note}  ${live.stem.slice(0, 40)}`);
+    questions.push({
+      id: live.index + 1,
+      number: String(live.index + 1),
+      type: live.type,
+      stem: live.stem,
+      options: (live.options || []).map((o, i) => ({
+        key: o.letter || String.fromCharCode(65 + i),
+        text: o.text,
+      })),
+      answer: letters,
+      reason: r.note || '',
+      confidence: null,
+    });
+  }
+
+  writeFileSync(outFile, JSON.stringify({
+    meta: { source: '当前网页', pageUrl: examPage.url(), generatedAt: new Date().toISOString(), count: questions.length },
+    questions,
+  }, null, 2), 'utf8');
+
+  log(`\n已解析 ${okCount} 题，未解析 ${skipCount} 题`);
+  log(`结果已写入: ${outFile}`);
+  log('（扫描模式：只读，未点击任何东西）');
+  await close();
+  process.exit(skipCount === 0 ? 0 : 1);
+}
 
 const report = { at: new Date().toISOString(), mode: APPLY ? 'apply' : 'dry-run', items: [] };
 const item = { questions: [], skipped: [], saved: false };

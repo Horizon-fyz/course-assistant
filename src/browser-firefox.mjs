@@ -25,67 +25,199 @@ const j = (v) => JSON.stringify(v === undefined ? null : v);
 /* ----------------------------- 元素定位 ----------------------------- */
 
 /**
- * 构造「在页面里找元素」的 JS 表达式（返回元素数组）。
- * 文本匹配时只保留最内层命中元素，避免点到包住整块的外层容器。
+ * 在页面里解析「定位描述」。描述结构：
+ *   { base: { kind:'css', value } | { kind:'text', value, exact },
+ *     within: 父定位描述 | null,      // 只在该父元素内部找（locator 链式调用）
+ *     filters: [{ hasText: { source, flags, isRe } }],
+ *     pick: null(全部) | 数字 | 'last' }
+ *
+ * 选择器里的 Playwright 专有伪类 :visible 会被去掉，因为下面统一做可见性过滤。
  */
-function matchExpr({ css, text, exact }) {
-  if (css != null) {
-    return `(() => {
-      try { return [...document.querySelectorAll(${j(css)})]; } catch (e) { return []; }
-    })()`;
-  }
-  return `(() => {
-    const t = ${j(text)};
-    const exact = ${exact ? 'true' : 'false'};
+const RESOLVE = `(spec) => {
+  if (!spec || !spec.base) return [];
+  const vis = (e) => {
+    const r = e.getBoundingClientRect();
+    const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  };
+  const all = (root, sel) => { try { return [...root.querySelectorAll(sel)]; } catch (e) { return []; } };
+  const byText = (root, t, exact) => {
     const hit = (e) => { const s = (e.textContent || '').trim(); return exact ? s === t : s.includes(t); };
-    const all = [...document.querySelectorAll('a,button,span,div,li,p,label,td,th,h1,h2,h3,h4,strong,em')];
-    return all.filter(hit).filter((e) => ![...e.children].some(hit));
-  })()`;
+    return all(root, 'a,button,span,div,li,p,label,td,th,h1,h2,h3,h4,strong,em')
+      .filter(hit).filter((e) => ![...e.children].some(hit));
+  };
+  const base = (s, root) => (s.base.kind === 'css'
+    ? all(root, s.base.value)
+    : byText(root, s.base.value, s.base.exact));
+  const resolve = (s) => {
+    let els = base(s, document);
+    if (s.within) {
+      const set = new Set();
+      for (const root of resolve(s.within)) {
+        for (const el of base(s, root)) if (el !== root) set.add(el);
+      }
+      els = [...set];
+    }
+    els = els.filter(vis);
+    for (const f of s.filters || []) {
+      if (!f.hasText) continue;
+      const h = f.hasText;
+      const re = h.isRe ? new RegExp(h.source, h.flags) : null;
+      els = els.filter((e) => {
+        const t = (e.textContent || '').trim();
+        return re ? re.test(t) : t.includes(h.source);
+      });
+    }
+    return s.pick == null ? els : (s.pick === 'last' ? els.slice(-1) : els.slice(s.pick, s.pick + 1));
+  };
+  return resolve(spec);
+}`;
+
+/** Playwright 选择器 → 定位描述 */
+function specFromSelector(selector, within = null) {
+  let s = String(selector).replace(/:visible/g, '');
+  if (s.startsWith('text=')) {
+    let t = s.slice(5);
+    const quoted = /^".*"$/.test(t);
+    if (quoted) t = t.slice(1, -1);
+    return { base: { kind: 'text', value: t, exact: quoted }, within, filters: [], pick: null };
+  }
+  return { base: { kind: 'css', value: s }, within, filters: [], pick: null };
 }
 
-/** 可见性过滤（在页面内执行，接在匹配表达式后面） */
-const VISIBLE = `(els) => els.filter((e) => {
-  const r = e.getBoundingClientRect();
-  const s = getComputedStyle(e);
-  return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && s.pointerEvents !== 'none';
-})`;
-
-/** 定位器：只实现用到的 count / first / click */
+/** 定位器：实现业务代码用到的那部分 Playwright Locator API */
 class BidiLocator {
-  constructor(page, query, index = null) {
+  constructor(page, spec) {
     this.page = page;
-    this.query = query;     // { css } 或 { text, exact }
-    this.index = index;     // null = 全部；0 = first()
+    this.spec = spec;     // 见 RESOLVE 注释
   }
 
-  first() { return new BidiLocator(this.page, this.query, 0); }
+  first() { return new BidiLocator(this.page, { ...this.spec, pick: 0 }); }
+  last() { return new BidiLocator(this.page, { ...this.spec, pick: 'last' }); }
+  nth(i) { return new BidiLocator(this.page, { ...this.spec, pick: Math.max(0, Math.trunc(Number(i) || 0)) }); }
 
-  _visibleExpr() {
-    const base = matchExpr(this.query);
-    return `(() => { const vis = ${VISIBLE}; const els = vis(${base}); return ${this.index === null ? 'els' : `els.slice(0, 1)`}; })()`;
+  /** 在当前结果内部继续找（对应 Playwright 的 locator.locator） */
+  locator(selector) {
+    return new BidiLocator(this.page, specFromSelector(selector, this.spec));
+  }
+
+  /** 在当前结果内部按文本找（对应 Playwright 的 locator.getByText） */
+  getByText(text, opts = {}) {
+    return new BidiLocator(this.page, {
+      base: { kind: 'text', value: String(text), exact: Boolean(opts.exact) },
+      within: this.spec, filters: [], pick: null,
+    });
+  }
+
+  /** 对应 Playwright 的 locator.filter({ hasText }) */
+  filter({ hasText } = {}) {
+    const filters = [...(this.spec.filters || [])];
+    if (hasText != null) {
+      filters.push({
+        hasText: hasText instanceof RegExp
+          ? { source: hasText.source, flags: hasText.flags, isRe: true }
+          : { source: String(hasText), isRe: false },
+      });
+    }
+    return new BidiLocator(this.page, { ...this.spec, filters });
+  }
+
+  _expr(body) {
+    return `(() => {
+      const resolve = ${RESOLVE};
+      const els = resolve(${j(this.spec)});
+      ${body}
+    })()`;
   }
 
   async count() {
-    try {
-      const r = await this.page._eval(`${this._visibleExpr()}.length`, 10000);
-      return Number(r) || 0;
-    } catch { return 0; }
+    try { return Number(await this.page._eval(this._expr('return els.length;'), 10000)) || 0; }
+    catch { return 0; }
   }
 
   /** 滚动到元素并返回视口中心坐标 */
   async _center() {
-    const expr = `(() => {
-      const vis = ${VISIBLE};
-      const els = vis(${matchExpr(this.query)});
-      const el = els[${this.index === null ? 0 : this.index}];
+    return await this.page._eval(this._expr(`
+      const el = els[0];
       if (!el) return null;
       el.scrollIntoView({ block: 'center', inline: 'center' });
       const r = el.getBoundingClientRect();
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
                w: Math.round(r.width), h: Math.round(r.height),
                tag: el.tagName, text: (el.textContent || '').trim().slice(0, 40) };
-    })()`;
-    return await this.page._eval(expr, 15000);
+    `), 15000);
+  }
+
+  async boundingBox() {
+    return await this.page._eval(this._expr(`
+      const el = els[0];
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    `), 15000).catch(() => null);
+  }
+
+  async scrollIntoViewIfNeeded() {
+    await this.page._eval(this._expr(`
+      const el = els[0];
+      if (el) el.scrollIntoView({ block: 'center', inline: 'center' });
+      return true;
+    `), 10000).catch(() => {});
+  }
+
+  async getAttribute(name) {
+    return await this.page._eval(this._expr(`
+      const el = els[0];
+      return el ? el.getAttribute(${j(String(name))}) : null;
+    `), 10000).catch(() => null);
+  }
+
+  async fill(text) {
+    await this.page._eval(this._expr(`
+      const el = els[0];
+      if (!el) return false;
+      const v = ${j(String(text))};
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (setter) setter.call(el, v); else el.value = v;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    `), 10000).catch(() => {});
+  }
+
+  /** 对应 Playwright 的 locator.allInnerTexts() */
+  async allInnerTexts() {
+    try {
+      const out = await this.page._eval(this._expr(
+        'return els.map((e) => (e.innerText || e.textContent || "").trim());'
+      ), 10000);
+      return Array.isArray(out) ? out : [];
+    } catch { return []; }
+  }
+
+  /** 对应 Playwright 的 locator.press(key)：先聚焦元素再按键 */
+  async press(key) {
+    await this.page._eval(this._expr(`
+      const el = els[0];
+      if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); }
+      return true;
+    `), 10000).catch(() => {});
+    await this.page.keyboard.press(key);
+  }
+
+  /** 对应 Playwright 的 locator.type(text)：先聚焦元素再逐字输入 */
+  async type(text, { delay = 0 } = {}) {
+    await this.page._eval(this._expr(`
+      const el = els[0];
+      if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); }
+      return true;
+    `), 10000).catch(() => {});
+    for (const ch of String(text)) {
+      await this.page.keyboard.type(ch);
+      if (delay > 0) await sleep(delay);
+    }
   }
 
   async click({ timeout = 15000 } = {}) {
@@ -96,7 +228,7 @@ class BidiLocator {
       if (box) break;
       await sleep(400);
     }
-    if (!box) throw new Error(`定位失败（超时 ${timeout}ms）: ${this.query.css ?? 'text=' + this.query.text}`);
+    if (!box) throw new Error(`定位失败（超时 ${timeout}ms）: ${JSON.stringify(this.spec.base)}`);
 
     // 主路径：真实鼠标事件。它不经过 JS 执行上下文，点击引发导航时也不会让调用卡死
     try {
@@ -116,7 +248,7 @@ class BidiLocator {
 
     // 兜底：脚本点击（发出去就不等结果，导航会销毁执行上下文）
     await this.page.conn.fire('script.evaluate', {
-      expression: `(() => { const vis = ${VISIBLE}; const els = vis(${matchExpr(this.query)}); const el = els[${this.index === null ? 0 : this.index}]; if (el) el.click(); })()`,
+      expression: this._expr('const el = els[0]; if (el) el.click(); return true;'),
       target: { context: this.page.contextId },
       awaitPromise: false,
       resultOwnership: 'none',
@@ -147,6 +279,140 @@ class BidiResponse {
   async json() { return JSON.parse(await this.text()); }
 }
 
+/* ---------------------------- 鼠标 / 键盘 ---------------------------- */
+
+/**
+ * BiDi 的按键值：命名键用 WebDriver 的 Unicode 私有区码位；
+ * 其它（如 'a' / '1' / '/'）直接按字符发送。
+ */
+const KEYS = {
+  Escape: '\uE00C', Enter: '\uE007', Tab: '\uE004', Backspace: '\uE003',
+  Delete: '\uE017', Insert: '\uE016', Home: '\uE011', End: '\uE010',
+  PageUp: '\uE00E', PageDown: '\uE00F',
+  ArrowLeft: '\uE012', ArrowUp: '\uE013', ArrowRight: '\uE014', ArrowDown: '\uE015',
+  Shift: '\uE008', Control: '\uE009', Alt: '\uE00A', Meta: '\uE03D',
+  ' ': ' ',
+};
+
+const BUTTONS = { left: 0, middle: 1, right: 2 };
+
+/** 真实鼠标事件（不经过 JS 执行上下文，触发器也不认脚本点击） */
+class BidiMouse {
+  constructor(page) {
+    this.page = page;
+    this.x = 0;
+    this.y = 0;
+  }
+
+  _pointer(actions) {
+    return this.page.conn.send('input.performActions', {
+      context: this.page.contextId,
+      actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' }, actions }],
+    }, 15000);
+  }
+
+  /** 支持 steps：拆成多个 pointerMove，模拟连续移动 */
+  async move(x, y, { steps = 1 } = {}) {
+    const n = Math.max(1, Math.trunc(Number(steps)) || 1);
+    const toX = Number(x) || 0;
+    const toY = Number(y) || 0;
+    const fromX = this.x;
+    const fromY = this.y;
+    const actions = [];
+    for (let i = 1; i <= n; i++) {
+      actions.push({
+        type: 'pointerMove',
+        x: Math.round(fromX + ((toX - fromX) * i) / n),
+        y: Math.round(fromY + ((toY - fromY) * i) / n),
+        duration: 0,
+      });
+    }
+    await this._pointer(actions);
+    this.x = toX;
+    this.y = toY;
+  }
+
+  async down({ button = 'left' } = {}) {
+    await this._pointer([{ type: 'pointerDown', button: BUTTONS[button] ?? 0 }]);
+  }
+
+  async up({ button = 'left' } = {}) {
+    await this._pointer([{ type: 'pointerUp', button: BUTTONS[button] ?? 0 }]);
+  }
+
+  async click(x, y, { button = 'left', delay = 0 } = {}) {
+    await this.move(x, y);
+    await this.down({ button });
+    if (delay > 0) await sleep(delay);
+    await this.up({ button });
+  }
+}
+
+/** 真实键盘事件 */
+class BidiKeyboard {
+  constructor(page) { this.page = page; }
+
+  _send(actions) {
+    return this.page.conn.send('input.performActions', {
+      context: this.page.contextId,
+      actions: [{ type: 'key', id: 'keyboard', actions }],
+    }, 15000);
+  }
+
+  /** 逐字符输入（对应 Playwright 的 keyboard.type） */
+  async type(text) {
+    for (const ch of String(text)) {
+      await this._send([{ type: 'keyDown', value: ch }, { type: 'keyUp', value: ch }]);
+    }
+  }
+
+  /** 按键（对应 Playwright 的 keyboard.press，支持 'Control+a' 形式） */
+  async press(key) {
+    const parts = String(key).split('+');
+    const main = parts.pop();
+    const mods = parts.map((p) => KEYS[p] ?? p);
+    const value = KEYS[main] ?? main;
+    const actions = [];
+    for (const m of mods) actions.push({ type: 'keyDown', value: m });
+    actions.push({ type: 'keyDown', value }, { type: 'keyUp', value });
+    for (const m of [...mods].reverse()) actions.push({ type: 'keyUp', value: m });
+    await this._send(actions);
+  }
+}
+
+/* ------------------------------- 弹窗 ------------------------------- */
+
+/** 原生 alert / confirm / prompt（对应 Playwright 的 Dialog） */
+class BidiDialog {
+  constructor(page, params) {
+    this._page = page;
+    this._params = params || {};
+    this._done = false;
+  }
+
+  type() { return this._params.type || 'alert'; }
+  message() { return this._params.message || ''; }
+  defaultValue() { return this._params.defaultValue ?? ''; }
+
+  async accept(promptText) { await this._handle(true, promptText); }
+  async dismiss() { await this._handle(false); }
+
+  async _handle(accept, userText) {
+    if (this._done) return;
+    this._done = true;
+    const params = { context: this._page.contextId, accept };
+    if (userText !== undefined) params.userText = String(userText);
+    // Firefox 默认已按 dismiss 处理弹窗，此时再发会报 no such alert —— 不算错误
+    try { await this._page.conn.send('browsingContext.handleUserPrompt', params, 10000); }
+    catch { /* 弹窗已被浏览器处理 */ }
+  }
+
+  _autoAccept() {
+    if (this._done) return;
+    this._handle(true).catch(() => {});
+  }
+}
+
 class BidiPage {
   constructor(browser, contextId, url = 'about:blank') {
     this.browser = browser;
@@ -155,6 +421,9 @@ class BidiPage {
     this._lastUrl = url;
     this._closed = false;
     this._respHandlers = new Set();
+    this._dialogHandlers = new Set();
+    this.mouse = new BidiMouse(this);
+    this.keyboard = new BidiKeyboard(this);
   }
 
   isClosed() { return this._closed; }
@@ -216,24 +485,25 @@ class BidiPage {
   }
 
   locator(selector) {
-    const s = String(selector);
-    if (s.startsWith('text=')) {
-      let t = s.slice(5);
-      const quoted = /^".*"$/.test(t);
-      if (quoted) t = t.slice(1, -1);
-      return new BidiLocator(this, { text: t, exact: quoted });
-    }
-    return new BidiLocator(this, { css: s });
+    return new BidiLocator(this, specFromSelector(selector));
   }
 
   getByText(text, opts = {}) {
-    return new BidiLocator(this, { text: String(text), exact: Boolean(opts.exact) });
+    return new BidiLocator(this, {
+      base: { kind: 'text', value: String(text), exact: Boolean(opts.exact) },
+      within: null,
+      filters: [],
+      pick: null,
+    });
   }
 
   on(event, fn) {
     if (event === 'response') {
       this._respHandlers.add(fn);
       this.browser.ensureResponseDispatch();
+    } else if (event === 'dialog') {
+      this._dialogHandlers.add(fn);
+      this.browser.ensureDialogDispatch();
     }
     // 其它事件（request 等）暂不需要，静默忽略
     return this;
@@ -241,6 +511,7 @@ class BidiPage {
 
   off(event, fn) {
     if (event === 'response') this._respHandlers.delete(fn);
+    else if (event === 'dialog') this._dialogHandlers.delete(fn);
     return this;
   }
 
@@ -257,6 +528,23 @@ class BidiPage {
     for (const fn of this._respHandlers) {
       try { fn(resp); } catch { /* 单个处理器出错不影响其它 */ }
     }
+  }
+
+  /**
+   * 原生弹窗分发。没有处理器时立即接受（等价 Playwright 的默认行为），
+   * 有处理器但迟迟没动作时 3 秒后兜底接受，避免整页被 alert 卡死。
+   */
+  _emitDialog(params) {
+    const dialog = new BidiDialog(this, params);
+    for (const fn of this._dialogHandlers) {
+      try {
+        const r = fn(dialog);
+        // 处理器常写成 d.accept()（返回 Promise），必须吞掉拒绝，否则会变成未处理异常
+        if (r && typeof r.catch === 'function') r.catch(() => {});
+      } catch { /* 忽略 */ }
+    }
+    if (!this._dialogHandlers.size) dialog._autoAccept();
+    else setTimeout(() => dialog._autoAccept(), 3000);
   }
 }
 
@@ -347,6 +635,7 @@ export async function createFirefoxBrowser(launch) {
     launch,
     ctx: null,
     _dispatching: false,
+    _dialogDispatching: false,
     ensureResponseDispatch() {
       if (this._dispatching) return;
       this._dispatching = true;
@@ -354,6 +643,10 @@ export async function createFirefoxBrowser(launch) {
         const page = this.ctx?._pages.get(params.context);
         if (page) page._emitResponse(params);
       });
+    },
+    ensureDialogDispatch() {
+      // 弹窗监听在 createFirefoxBrowser 里已无条件注册，这里只做占位
+      this._dialogDispatching = true;
     },
     dropPage(id) { this.ctx?.dropPage(id); },
     async close() { launch.close(); },
@@ -387,6 +680,17 @@ export async function createFirefoxBrowser(launch) {
   launch.conn.on('browsingContext.navigationStarted', trackUrl);
   launch.conn.on('browsingContext.historyUpdated', trackUrl);
   launch.conn.on('browsingContext.load', trackUrl);
+
+  // 原生弹窗：有处理器就交给页面，没有就自动接受（否则会永久挡住页面）
+  launch.conn.on('browsingContext.userPromptOpened', (p) => {
+    const id = p?.context;
+    const page = ctx._pages.get(id);
+    if (page) {
+      page._emitDialog(p);
+      return;
+    }
+    launch.conn.send('browsingContext.handleUserPrompt', { context: id, accept: true }, 8000).catch(() => {});
+  });
 
   return {
     kind: 'bidi',

@@ -179,16 +179,6 @@
       "sideEffects": "调用外部 AI 接口（可能产生费用）；写答案文件。未配置 AI 时直接报错退出，不发起任何请求"
     },
     {
-      "name": "pad",
-      "summary": "对答案悬浮窗：置顶小窗，抓屏识别当前正在作答的题目并给出答案，供人自行核对（只读，不点击/不填写/不提交）",
-      "params": [
-        { "name": "--test", "type": "path", "required": false, "description": "不开窗口，只识别指定 PNG（自检用，便于自动化验证）" }
-      ],
-      "returns": { "kind": "text", "covers": ["置顶窗口（Alt+Q 或按钮触发）", "识别结果：题型 / 题干 / 选项 / 答案 / 解析 / 置信度"], "exitCode": "0 正常退出 / 1 缺脚本或启动失败" },
-      "sideEffects": "截取当前屏幕并上传到你配置的 AI 接口（可能产生费用）；不读写任何页面、不产生提交",
-      "safe": true
-    },
-    {
       "name": "help",
       "summary": "打印命令帮助",
       "params": [],

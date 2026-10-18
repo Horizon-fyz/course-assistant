@@ -14,6 +14,7 @@
  */
 
 import { createClient, extractJson } from './ai.mjs';
+import { pickReason } from './config.mjs';
 import { formatQuestionForPrompt } from './parser.mjs';
 
 /**
@@ -68,8 +69,8 @@ export async function mapPool(items, limit, worker) {
 /** 各题型的作答规则，用于拼系统提示词 */
 const TYPE_RULES = {
   single: '单选题：只需一个正确选项字母，answer 形如 "A"。',
-  judge: '判断题：answer 取 "A"（正确）或 "B"（错误）。',
-  multiple: '多选题：answer 为按字母升序拼接的字符串，如 "ABD"，不要有分隔符。',
+  judge: '判断题：answer 只能是 "A"（正确）或 "B"（错误），必须二选一，不要输出「无法判断」等其它文字。',
+  multiple: '多选题：通常有 2 个及以上正确选项，answer 必须给出**全部**正确项（按字母升序拼接，如 "ABD"，不要分隔符）；确认确实只有一个正确项时才输出单个字母。',
   blank: '填空题：answer 为按空位顺序用 "；" 分隔的答案文本。',
   essay: '简答题：answer 为要点式参考答案，简洁分点。',
 };
@@ -161,6 +162,26 @@ export function mockAnswer(q) {
 }
 
 /**
+ * 多选题「复核」提示词：题目已给出单个字母时，追问一次是否还有其它正确项。
+ * @param {Question} q
+ * @returns {Array<{role:string,content:string}>}
+ */
+export function buildRecheckMessages(q) {
+  const system = [
+    '你是一名严谨的答题助手。',
+    '严格只输出一个 JSON 数组，不要输出任何解释性文字。',
+    '数组中只含一个元素，形如 {"number":"题号","answer":"答案","reason":"简要理由(<=40字)","confidence":0-1}。',
+    '这是一道【多选题】，通常有 2 个及以上正确选项。请**逐项**判断每个选项，给出全部正确项的字母（升序拼接，如 "ABD"）。',
+    '只有在你确认确实只有一个正确项时，才输出单个字母。',
+  ].join('\n');
+  const user = ['请复核下面这道多选题，给出全部正确选项：', '', formatQuestionForPrompt(q)].join('\n');
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ];
+}
+
+/**
  * 核心编排：批量并发地向 AI 提问并汇总答案。
  *
  * @param {Object} params
@@ -185,8 +206,8 @@ export async function answerQuestions({
 } = {}) {
   if (!Array.isArray(questions) || questions.length === 0) return new Map();
 
-  // 优先使用注入的 client；否则用配置现造一个
-  const aiClient = mock ? null : client || createClient(config);
+  // 优先使用注入的 client；否则用「思考模型」配置现造一个
+  const aiClient = mock ? null : client || createClient(pickReason(config));
 
   const batches = chunk(questions, config?.batchSize || 5);
   const answers = new Map();
@@ -213,6 +234,40 @@ export async function answerQuestions({
     hooks.onBatch?.(batch, answers);
     hooks.onProgress?.(done, questions.length);
   });
+
+  // —— 多选题复核 ——
+  // 多选题只给出一个字母时追问一次：这类题通常不止一个正确项，模型偶尔会漏。
+  // 复核结果更完整就替换，否则保留原答案；复核本身失败不影响原答案。
+  if (!mock) {
+    const suspicious = questions.filter((q) => {
+      if (q.type !== 'multiple') return false;
+      const a = answers.get(q.id);
+      return a && /^[A-Za-z]$/.test(String(a.answer || '').trim());
+    });
+    if (suspicious.length) {
+      hooks.onRecheck?.(suspicious.length);
+      await mapPool(suspicious, Math.min(2, config?.concurrency || 3), async (q) => {
+        if (signal?.aborted) return;
+        try {
+          const content = await aiClient.chat(buildRecheckMessages(q), { signal });
+          const parsed = extractJson(content);
+          const one = Array.isArray(parsed) ? parsed[0] : (parsed?.answers?.[0] ?? parsed);
+          const norm = normalizeAnswerItem(one);
+          const letters = String(norm.answer || '').toUpperCase().replace(/[^A-Z]/g, '');
+          if (letters.length > 1) {
+            const prev = answers.get(q.id) || {};
+            answers.set(q.id, {
+              answer: letters,
+              reason: (norm.reason || prev.reason || '') + '（多选题复核）',
+              confidence: norm.confidence,
+            });
+          }
+        } catch (e) {
+          hooks.onError?.(e, [q]);
+        }
+      });
+    }
+  }
 
   return answers;
 }

@@ -84,7 +84,7 @@ suspend fun askAI(prompt: String, config: AIConfig): Answer {
 |---|---|
 | `answer-engine.mjs` | 核心逻辑用 Kotlin 重写（normalize、judgeValue、lettersToIndexes） |
 | `ai.mjs` | 直接用 OkHttp 调用，接口格式一致 |
-| `hud.mjs` | 提示词模板复用，多模态识别需安卓端截图 |
+| `answer.mjs` | 提示词模板与作答编排（题型规则、多选题复核）可参照迁移；多模态识别需安卓端截图 |
 
 ## 权限申请
 

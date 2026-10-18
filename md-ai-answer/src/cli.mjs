@@ -120,7 +120,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   console.log(`题库：${input}`);
   console.log(`解析出题目：${questions.length} 题`);
-  console.log(mock ? '模式：离线 mock（不调用 AI）' : `模式：${config.model} @ ${config.baseUrl}`);
+  console.log(mock ? '模式：离线 mock（不调用 AI）' : `模式：${config.reasonModel} @ ${config.reasonBaseUrl}`);
 
   // 3) 编排答题（进度直接打印）
   const answers = await answerQuestions({
@@ -133,7 +133,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   // 4) 渲染并落盘
   const outPath = args.out || `${input.replace(/\.md$/i, '')}.answers.md`;
-  const meta = { source: path.basename(input), model: mock ? 'mock' : config.model };
+  const meta = { source: path.basename(input), model: mock ? 'mock' : config.reasonModel };
   await writeFile(outPath, renderAnswerMarkdown({ questions, answers, meta }), 'utf8');
   console.log(`答案已写入：${outPath}`);
 

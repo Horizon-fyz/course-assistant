@@ -226,6 +226,8 @@ export function parseQuestionBank(markdown) {
  */
 export function formatQuestionForPrompt(q) {
   const typeLabel = TYPE_LABELS[q.type] || '题目';
+  // 多选题额外提示一句：这类题通常不止一个正确项，避免模型只给一个字母
+  const extra = q.type === 'multiple' ? '（注意：多选题通常有多个正确选项，请选出全部）' : '';
   const optionText = q.options.map((o) => `${o.key}. ${o.text}`).join('\n');
-  return [`[#${q.id}] (${typeLabel})`, q.stem, optionText || '(无选项)'].join('\n');
+  return [`[#${q.id}] (${typeLabel})${extra}`, q.stem, optionText || '(无选项)'].join('\n');
 }

@@ -7,6 +7,9 @@
 //  常用：
 //    node zhs.mjs doctor              环境与登录态自检（先跑这个）
 //    node zhs.mjs all                 全流程：抓题 + 生成全部格式 + 自检 + AI 作答
+//    node zhs.mjs answer              全自动作业答题（自动提交）
+//    node zhs.mjs watch               全自动看课（1.5x + 自动弹题）
+//    node zhs.mjs auto                全自动：先答题再看课
 //    node zhs.mjs login               登录并固化会话（重启不丢）
 //    node zhs.mjs fetch               只抓题
 //    node zhs.mjs docs                只按现有数据重新生成文档
@@ -158,7 +161,9 @@ function cmdHelp() {
     ['fetch', '只抓题（不生成文档）'],
     ['docs', '只按现有数据重新生成文档'],
     ['solve', '只作答：识别题库 → 调用 AI → 输出答案'],
-    ['pad', '对答案悬浮窗：抓屏识别当前题目并给答案（只读，不代填）'],
+    ['answer', '全自动作业：进入每份未提交作业 → 作答 → 提交'],
+    ['watch', '全自动看课：真实播放 + 1.5x + 自动弹题'],
+    ['auto', '全自动：先答题，再看课'],
     ['verify', '校验产物：数据契约 + 文档完整性 + 产物清单'],
     ['status', '看一眼当前状态'],
   ];
@@ -172,6 +177,11 @@ function cmdHelp() {
   say('  solve --mock                   离线试跑作答（不调用 AI）');
   say('  solve --limit 20 --model X     只作答前 20 题 / 临时换模型');
   say('  login --restart-check          登录后顺带验证「关掉浏览器再开仍在线」');
+  say('  answer --course 国家安全教育    只做某一门课的作业');
+  say('  answer --limit 3 --no-submit   只做 3 份 / 只作答不提交');
+  say('  watch  --rate 1.25             看课倍速（默认 1.5，平台上限 1.5）');
+  say('  watch  --minutes 120           最多跑 120 分钟');
+  say('  auto   --dry                   只演练，不动页面');
   head('退出码');
   say('  0 成功　1 出错　2 未登录　3 校验不通过');
   say('');
@@ -461,7 +471,8 @@ function aiConfigState() {
   const file = join(MDAI_DIR, 'config.json');
   if (existsSync(file)) {
     try {
-      const key = String(JSON.parse(readFileSync(file, 'utf8')).apiKey || '').trim();
+      const cfg = JSON.parse(readFileSync(file, 'utf8'));
+      const key = String(cfg.visionApiKey || cfg.reasonApiKey || cfg.apiKey || '').trim();
       if (key && !/你的key|your[-_ ]?key|^sk-xxx/i.test(key)) {
         return { ok: true, from: file.slice(ROOT.length + 1) };
       }
@@ -511,26 +522,6 @@ function cmdSolve() {
   return code;
 }
 
-function cmdPad() {
-  head('对答案悬浮窗');
-  const dir = join(ROOT, 'md-ai-answer');
-  const script = join(dir, 'pad', 'pad.ps1');
-  if (!existsSync(script)) { bad('缺少 md-ai-answer\\pad\\pad.ps1'); return 1; }
-
-  const st = aiConfigState();
-  if (!st.ok) warn('AI 尚未配置，悬浮窗能开但不会出答案。见 solve 的配置提示。');
-
-  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script];
-  const testShot = flag('test');           // --test <png>：不开窗口，只识别一张图（自检）
-  if (typeof testShot === 'string' && testShot) args.push('-Test', resolve(ROOT, testShot));
-
-  say('常驻置顶小窗：点「识别并作答」或按 Alt+Q 抓屏识别；关闭窗口即退出。');
-  say('说明：只读屏幕，不点击、不填写、不提交任何东西。');
-  const r = run('powershell.exe', args, { cwd: dir });
-  if (r.error) { bad('启动失败：' + r.error.message); return 1; }
-  return r.status ?? 0;
-}
-
 function cmdVerify() {
   head('校验产物');
   if (!existsSync(FILES.papers)) { bad('缺少 export\\papers.json'); return 1; }
@@ -563,6 +554,33 @@ function cmdVerify() {
   return dataOk && mdOk ? 0 : 3;
 }
 
+/** 透传参数给 src 下的自动化脚本 */
+function runAutomation(script, extraArgs = ARGV.slice(1)) {
+  return run(node, [join(ROOT, 'src', script), ...extraArgs], { cwd: ROOT }).status ?? 1;
+}
+
+function cmdAnswer() {
+  head('全自动作业答题');
+  info('逐个打开未提交作业 → 题库作答 → 下一题 → 暂存 → 提交');
+  return runAutomation('auto-homework.mjs');
+}
+
+function cmdWatch() {
+  head('全自动看课');
+  info('真实鼠标播放 + 1.5x + 自动处理弹题（脚本调用 play/倍速会被风控）');
+  return runAutomation('watch-course.mjs');
+}
+
+function cmdAuto() {
+  head('全自动答题 + 看课');
+  const a = runAutomation('auto-homework.mjs');
+  if (a !== 0) {
+    warn(`答题阶段退出码 ${a}，继续看课`);
+  }
+  const w = runAutomation('watch-course.mjs');
+  return w || a;
+}
+
 function cmdAll() {
   const fetchCode = cmdFetch();
   if (fetchCode !== 0 && fetchCode !== 1) return fetchCode;   // 2=未登录 等
@@ -592,8 +610,10 @@ const COMMANDS = {
   fetch: cmdFetch,
   docs: cmdDocs,
   solve: cmdSolve,
-  pad: cmdPad,
   verify: cmdVerify,
+  answer: cmdAnswer,
+  watch: cmdWatch,
+  auto: cmdAuto,
   all: cmdAll,
   whoami: cmdWhoami,
   import: cmdImport,
